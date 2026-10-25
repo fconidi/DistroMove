@@ -39,7 +39,13 @@ _ROLE_ORDER = ("root", "boot", "usr", "var", "home", "opt", "srv", "extra")
 ESP_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 ESP_MOUNTPOINTS = ("/boot/efi", "/efi")
 _RANDOM_KEYS = {"/dev/urandom", "/dev/random", "/dev/hw_random"}
-_NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "9p", "virtiofs"}
+_NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "9p", "virtiofs", "glusterfs", "ceph"}
+# kernel and runtime filesystems: nothing in them is data to copy (snap images come back
+# from /var/lib/snapd, overlay layers from the directories below them)
+_PSEUDO_FS = {"proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "ramfs", "overlay", "cgroup",
+              "cgroup2", "securityfs", "debugfs", "tracefs", "configfs", "fusectl", "pstore",
+              "bpf", "mqueue", "hugetlbfs", "autofs", "binfmt_misc", "efivarfs", "nsfs",
+              "rpc_pipefs", "selinuxfs", "squashfs"}
 _BY_ID_ORDER = ("wwn-", "nvme-eui.", "nvme-nvme.", "ata-", "nvme-", "scsi-", "usb-", "mmc-")
 _SB_VAR = "sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
@@ -290,6 +296,45 @@ def _volume_groups(live: _Live, extra: set[str], strict: bool) -> dict[str, tupl
     if strict and missing:
         raise Unsupported(f"{missing[0]} is not mounted")
     return found
+
+
+def _check_no_zfs(live: _Live) -> None:
+    for m in live.mounts:
+        if m.get("fstype") == "zfs":
+            raise Unsupported(f"{m.get('target')} is on ZFS ({m.get('source')}), "
+                              "which is not supported")
+
+
+def _parent_mount(live: _Live, m: dict) -> dict | None:
+    """The mount that directly contains the mountpoint of ``m``."""
+    target, best = m.get("target") or "", None
+    for o in live.mounts:
+        t = o.get("target") or ""
+        if t != target and _within(target, t) and (
+                best is None or len(t) > len(best.get("target") or "")):
+            best = o
+    return best
+
+
+def _unmigrated(live: _Live, groups: dict[str, tuple[str, str]], esp: Partition) -> list[MountInfo]:
+    """Mounts whose data the copy leaves where it is: block devices that are not volumes
+    (nor the ESP), network filesystems, and any other real filesystem (FUSE and the like)
+    unless it sits on a kernel or runtime filesystem such as /run or /tmp."""
+    out = []
+    for m in live.mounts:
+        source, fstype = m.get("source") or "", m.get("fstype") or ""
+        if fstype in _PSEUDO_FS:
+            continue
+        if source.startswith("/dev/"):
+            part = _partition_of(live, source)
+            if part is not None and (part.name in groups or part.name == esp.name):
+                continue
+        elif fstype not in _NETWORK_FS:
+            parent = _parent_mount(live, m)
+            if parent is not None and parent.get("fstype") in _PSEUDO_FS:
+                continue
+        out.append(_mountinfo(m))
+    return out
 
 
 def _ordered(groups: dict[str, tuple[str, str]]) -> list[tuple[str, str, str]]:
@@ -606,6 +651,7 @@ def discover_source(r: Runner, root: Path = Path("/"), *,
     packages = installed_packages(dpkg)
     check_tools(r)
     live = _gather(r, root)
+    _check_no_zfs(live)
     groups = _volume_groups(live, set(extra_mounts), strict=True)
     if not any(mp == "/" for _, mp in groups.values()):
         raise Unsupported("the root filesystem was not found")
@@ -632,14 +678,7 @@ def discover_source(r: Runner, root: Path = Path("/"), *,
     dirs = _efi_dirs(root, esp_mp)
     esp = Esp(esp_part, esp_mp, dirs, [d for d in dirs if d.upper() != "BOOT" and not same(d, own)])
 
-    unmigrated = []
-    for m in live.mounts:
-        source = m.get("source") or ""
-        if not (source.startswith("/dev/") or m.get("fstype") in _NETWORK_FS):
-            continue
-        part = _partition_of(live, source) if source.startswith("/dev/") else None
-        if part is None or (part.name not in groups and part.name != esp_part.name):
-            unmigrated.append(_mountinfo(m))
+    unmigrated = _unmigrated(live, groups, esp_part)
 
     paths = [s.path for v in volumes if v.btrfs for s in v.btrfs.subvolumes]
     kind = ("ext4" if root_vol.fs == "ext4"

@@ -632,7 +632,7 @@ def test_system_mountpoint_not_on_a_block_device_Unsupported(tmp_path):
     zfs = with_home("zfs", ("rpool/home", "/home", "zfs", "rw,relatime,xattr,posixacl", "/"))
     with pytest.raises(Unsupported) as exc:
         discover_source(*zfs)
-    assert "/home" in exc.value.reason and "zfs" in exc.value.reason
+    assert "/home" in exc.value.reason and "ZFS" in exc.value.reason
     automount = with_home("autofs", ("systemd-1", "/home", "autofs",
                                      "rw,relatime,fd=48,pgrp=1,timeout=0,minproto=5,maxproto=5,"
                                      "direct", "/"))
@@ -776,3 +776,34 @@ def test_snapshot_keeps_roles_of_included_volumes(tmp_path):
     later = {i.partuuid: i for i in collect_snapshot(r2, root2, source=src).identities}
     assert (later[root_v.partition.partuuid].role, later[root_v.partition.partuuid].volume_id) == (
         "root", root_v.volume_id)
+
+
+def test_zfs_anywhere_Unsupported_and_other_mounts_below_listed(tmp_path):
+    def with_mounts(name, *rows):
+        mounts = json.loads(fx("ext4", "findmnt.json"))
+        mounts["filesystems"] += [dict(zip(("source", "target", "fstype", "options", "fsroot"), row))
+                                  for row in rows]
+        return probe_of("ext4", tmp_path / name, {FINDMNT: json.dumps(mounts)})
+
+    docker = with_mounts("docker", ("rpool/docker", "/var/lib/docker", "zfs",
+                                    "rw,relatime,xattr,noacl,casesensitive", "/"))
+    with pytest.raises(Unsupported) as exc:
+        discover_source(*docker)
+    assert "/var/lib/docker" in exc.value.reason and "ZFS" in exc.value.reason
+
+    src = discover_source(*with_mounts(
+        "fuse",
+        ("data1:data2", "/srv/media", "fuse.mergerfs",
+         "rw,relatime,user_id=0,group_id=0,default_permissions,allow_other", "/"),
+        ("tmpfs", "/var/cache/build", "tmpfs", "rw,nosuid,nodev,relatime,size=2097152k,inode64", "/"),
+        ("overlay", "/var/lib/docker/overlay2/3f1c2a9e8b7d/merged", "overlay",
+         "rw,relatime,lowerdir=/var/lib/docker/overlay2/l/A2B3C4D5E6F7,"
+         "upperdir=/var/lib/docker/overlay2/3f1c2a9e8b7d/diff,"
+         "workdir=/var/lib/docker/overlay2/3f1c2a9e8b7d/work", "/"),
+        ("/dev/loop3", "/snap/core22/2045", "squashfs", "ro,nodev,relatime,errors=continue", "/"),
+        ("rclone-remote:", "/tmp/remote", "fuse.rclone", "rw,nosuid,nodev,relatime,user_id=1000", "/")))
+    targets = [m.target for m in src.unmigrated_mounts]
+    assert targets == ["/srv/data", "/mnt/winesp", "/media/alice/SDCARD", "/srv/media"]
+    assert src.unmigrated_mounts[-1] == MountInfo(
+        "data1:data2", "/srv/media", "fuse.mergerfs",
+        "rw,relatime,user_id=0,group_id=0,default_permissions,allow_other")
