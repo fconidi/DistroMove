@@ -1,0 +1,6 @@
+BootCurrent: 0001
+Timeout: 1 seconds
+BootOrder: 0001,0000,0002
+Boot0000* Windows Boot Manager	HD(1,GPT,5d0b6f1a-3c2e-4b8d-9f7a-1e2d3c4b5a69,0x800,0x32000)/File(\EFI\Microsoft\Boot\bootmgfw.efi)
+Boot0001* debian	HD(1,GPT,6a4b0f1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b,0x800,0x100000)/File(\EFI\debian\shimx64.efi)
+Boot0002* UEFI: PXE IPv4 Intel(R)	PciRoot(0x0)/Pci(0x1f,0x6)/MAC(a0b1c2d3e4f5,0)
