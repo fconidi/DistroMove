@@ -4,15 +4,15 @@ All mutating commands in this module must follow a durable journal intent.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import re
 from typing import Literal
 
 from .journal import Journal, read_journal
-from .layout import MigrationPlan, Partplan, assert_tables_unchanged
-from .model import CreatedPartition, Keyslot, LuksInfo, Source
+from .layout import InitGpt, MigrationPlan, Partplan, assert_tables_unchanged, disk_info, plan_init_gpt
+from .model import BtrfsInfo, CreatedPartition, Keyslot, LuksInfo, Source
 from .probe import classify_keys
 from .runner import Runner
 
@@ -222,12 +222,18 @@ def create_partitions(r: Runner, plan: MigrationPlan,
         raise ValueError("initialise GPT separately, then rebuild and approve the layout")
     assert_tables_unchanged(r, plan)
     created: dict[str, CreatedPartition] = {}
+    prepared = []
     for disk in sorted({part.disk for part in [*plan.partitions, *plan.swaps]}):
         parts = [part for part in [*plan.partitions, *plan.swaps] if part.disk == disk]
         sector, before = _table(r, disk)
         _check_plan(parts, before, sector)
         if _kernel(r, disk) != _expected_kernel(before, sector):
             raise KernelTableStale(f"kernel partition view was stale before writing {disk}")
+        prepared.append((disk, parts, sector, before))
+    for disk, parts, sector, before in prepared:
+        now_sector, now_rows = _table(r, disk)
+        if now_sector != sector or now_rows != before or _kernel(r, disk) != _expected_kernel(before, sector):
+            raise KernelTableStale(f"partition table changed immediately before writing {disk}")
         intents = []
         for part in parts:
             identity = {"partuuid": part.planned.partuuid,
@@ -255,6 +261,27 @@ def create_partitions(r: Runner, plan: MigrationPlan,
                 part.planned.luks_uuid, part.planned.fs_uuid)
             journal.done(op_id, "created", path=row["node"])
     return created
+
+
+def init_gpt(r: Runner, action: InitGpt, journal: Journal) -> None:
+    """Write an empty GPT only after a fresh identity and signature check."""
+    if not action.typed_confirmation or action.typed_confirmation != action.confirmation:
+        raise ValueError("GPT initialization requires typed disk identity confirmation")
+    fresh = plan_init_gpt(disk_info(r, action.disk))
+    if (fresh is None or fresh != replace(action, typed_confirmation=None) or not action.confirmation
+            or not action.no_recognised_signatures):
+        raise ValueError("GPT initialization confirmation or disk identity changed")
+    op = journal.intend("init_gpt", {"disk_identity": action.disk_identity,
+                                     "confirmation": action.confirmation},
+                        disk=action.disk, size_bytes=action.size_bytes,
+                        logical_sector=action.logical_sector)
+    r.run(["sfdisk", "--lock", action.disk], input=b"label: gpt\n")
+    r.run(["partprobe", action.disk])
+    r.run(["udevadm", "settle"])
+    sector, rows = _table(r, action.disk)
+    if rows or sector != action.logical_sector or _kernel(r, action.disk):
+        raise KernelTableStale("new GPT is not empty or kernel view is stale")
+    journal.done(op, "created")
 
 
 _PARTITION_ID = ["lsblk", "--json", "--bytes", "--list", "--output",
@@ -292,6 +319,18 @@ def _luks_uuid(r: Runner, device: str, expected: str) -> None:
         raise KernelTableStale(f"LUKS identity differs on {device}")
 
 
+def _require_no_signature(r: Runner, device: str) -> None:
+    proc = r.run(["wipefs", "-J", device], readonly=True)
+    try:
+        signatures = json.loads(proc.stdout or "{}").get("signatures") or []
+        if not isinstance(signatures, list):
+            raise ValueError
+    except ValueError as exc:
+        raise KernelTableStale(f"cannot verify signatures on {device}") from exc
+    if signatures:
+        raise ValueError(f"recognised signature already exists on {device}")
+
+
 def luks_format(r: Runner, created: dict[str, CreatedPartition], crypto: CryptoPlan,
                 volume_id: str, passphrase: bytes, journal: Journal) -> str:
     """Format a verified new partition with its preassigned LUKS UUID."""
@@ -304,6 +343,7 @@ def luks_format(r: Runner, created: dict[str, CreatedPartition], crypto: CryptoP
     if luks.version == 1 and slots[0].kdf != "pbkdf2":
         raise UnsupportedKdf("LUKS1 requires PBKDF2")
     _assert_created(r, part)
+    _require_no_signature(r, part.path)
     command = ["cryptsetup", "luksFormat", "--type", f"luks{luks.version}",
                "--cipher", luks.cipher, "--key-size", str(luks.key_bits)]
     if luks.version == 2:
@@ -404,6 +444,7 @@ def make_fs(r: Runner, device: str, fs: str, fs_uuid: str, journal: Journal) -> 
         raise ValueError("unsupported filesystem or device")
     if not _journal_allows_fs(journal, device, fs_uuid):
         raise ValueError("journal does not authorize formatting this device")
+    _require_no_signature(r, device)
     command = (["mkfs.ext4", "-U", fs_uuid, device] if fs == "ext4" else
                ["mkfs.btrfs", "-U", fs_uuid, device])
     op = journal.intend("make_fs", {"fs_uuid": fs_uuid}, creates="filesystem",
@@ -411,7 +452,142 @@ def make_fs(r: Runner, device: str, fs: str, fs_uuid: str, journal: Journal) -> 
     r.run(command)
     actual = r.run(["blkid", "-p", "-o", "value", "-s", "UUID", device],
                    readonly=True).stdout.strip()
-    if actual.casefold() != fs_uuid.casefold():
+    actual_type = r.run(["blkid", "-p", "-o", "value", "-s", "TYPE", device],
+                        readonly=True).stdout.strip()
+    if actual.casefold() != fs_uuid.casefold() or actual_type != fs:
         raise KernelTableStale(f"filesystem UUID differs on {device}")
     journal.done(op, "created")
     return fs_uuid
+
+
+def _relative_subvol(path: str) -> Path:
+    rel = Path(path)
+    if (not path or rel.is_absolute() or any(p in {"", ".", ".."} for p in path.split("/"))
+            or path.startswith("-")):
+        raise ValueError(f"unsafe subvolume path: {path!r}")
+    return rel
+
+
+def replicate_subvolumes(r: Runner, mount: Path | str, info: BtrfsInfo,
+                         journal: Journal) -> dict[int, int]:
+    """Recreate a filesystem's subvolume tree in a mounted top level (subvolid=5)."""
+    root = Path(mount)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("destination top level is not a directory")
+    if not info.fs_uuid:
+        raise ValueError("missing btrfs filesystem UUID")
+    by_path = {_relative_subvol(s.path): s for s in info.subvolumes}
+    if len(by_path) != len(info.subvolumes) or len({s.id for s in info.subvolumes}) != len(info.subvolumes):
+        raise ValueError("duplicate btrfs subvolume path or ID")
+    if info.default_subvol_id != 5 and info.default_subvol_id not in {s.id for s in info.subvolumes}:
+        raise ValueError("default subvolume is absent from plan")
+    for subvol in info.subvolumes:
+        if subvol.id <= 5 or any(name not in {"ro", "compression"}
+                                 for name in subvol.properties):
+            raise ValueError("invalid subvolume ID or unsupported property")
+    for rel in by_path:
+        if (root / rel).exists() or (root / rel).is_symlink():
+            raise ValueError(f"destination subvolume already exists: {rel}")
+    ordered = sorted(by_path.items(), key=lambda item: (len(item[0].parts), str(item[0])))
+    mapping = {5: 5}
+    for rel, subvol in ordered:
+        for ancestor in list(rel.parents)[:-1]:
+            parent = root / ancestor
+            if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+                raise ValueError(f"unsafe subvolume parent: {ancestor}")
+        target = root / rel
+        op = journal.intend("create_subvolume", {"fs_uuid": info.fs_uuid,
+                                                  "old_subvolid": subvol.id,
+                                                  "subvol_path": str(rel)},
+                            path=str(target))
+        r.run(["btrfs", "subvolume", "create", "--parents", str(target)])
+        raw = r.run(["btrfs", "inspect-internal", "rootid", str(target)],
+                    readonly=True).stdout.strip()
+        try:
+            new_id = int(raw)
+        except ValueError as exc:
+            raise KernelTableStale(f"cannot read new subvolume ID: {target}") from exc
+        if new_id <= 5 or new_id in mapping.values():
+            raise KernelTableStale(f"invalid or duplicate new subvolume ID: {new_id}")
+        mapping[subvol.id] = new_id
+        journal.done(op, "created", new_subvolid=new_id)
+    for rel, subvol in reversed(ordered):
+        target = root / rel
+        for name, value in sorted(subvol.properties.items()):
+            prop_op = journal.intend("set_subvolume_property", {"fs_uuid": info.fs_uuid,
+                                                                 "subvol_path": str(rel)},
+                                     name=name, value=value)
+            r.run(["btrfs", "property", "set", str(target), name, value])
+            journal.done(prop_op, "set")
+    default_id = mapping[info.default_subvol_id]
+    op = journal.intend("set_default_subvolume", {"fs_uuid": info.fs_uuid,
+                                                   "subvolid": default_id}, path=str(root))
+    r.run(["btrfs", "subvolume", "set-default", str(default_id), str(root)])
+    journal.done(op, "set")
+    return mapping
+
+
+@dataclass(frozen=True)
+class DestinationMount:
+    device: str
+    fs: Literal["ext4", "btrfs", "vfat"]
+    mountpoint: str
+    fs_uuid: str
+    old_subvolid: int | None = None
+    options: tuple[str, ...] = ()
+
+
+def mount_destination(r: Runner, devices: list[DestinationMount],
+                      subvol_maps: dict[str, dict[int, int]], base: Path | str,
+                      journal: Journal) -> list[Path]:
+    """Mount planned volumes beneath a private staging directory, parents first."""
+    base_path = Path(base)
+    if not base_path.is_dir() or base_path.is_symlink() or not base_path.is_absolute():
+        raise ValueError("destination staging root must be an existing absolute directory")
+    if not devices or sum(spec.mountpoint == "/" for spec in devices) != 1:
+        raise ValueError("exactly one root mount is required")
+    targets: set[str] = set()
+    ordered = sorted(devices, key=lambda spec: (spec.mountpoint.count("/"), spec.mountpoint))
+    for spec in ordered:
+        path = Path(spec.mountpoint)
+        if (not path.is_absolute() or ".." in path.parts or spec.mountpoint in targets
+                or not spec.device.startswith("/dev/") or not spec.fs_uuid):
+            raise ValueError("invalid or duplicate destination mount")
+        if spec.old_subvolid is not None and spec.fs != "btrfs":
+            raise ValueError("subvolume ID requires btrfs")
+        if spec.old_subvolid is not None and spec.old_subvolid not in subvol_maps.get(spec.fs_uuid, {}):
+            raise ValueError("missing destination subvolume mapping")
+        if any("," in option or option.startswith("subvol") for option in spec.options):
+            raise ValueError("invalid destination mount option")
+        targets.add(spec.mountpoint)
+    mounted = []
+    for spec in ordered:
+        target = base_path / spec.mountpoint.lstrip("/")
+        if any(parent.is_symlink() or (parent.exists() and not parent.is_dir())
+               for parent in [target, *list(target.parents)[:len(target.parts) - len(base_path.parts)]]):
+            raise ValueError("mountpoint traverses an unsafe path")
+        if target != base_path and not target.exists():
+            op = journal.intend("mkdir_mountpoint", {"fs_uuid": spec.fs_uuid}, path=str(target))
+            target.mkdir(parents=True)
+            journal.done(op, "created")
+        if target.is_symlink() or not target.is_dir() or target.resolve() != target:
+            raise ValueError("mountpoint is not a safe directory")
+        actual = r.run(["blkid", "-p", "-o", "value", "-s", "UUID", spec.device],
+                       readonly=True).stdout.strip()
+        actual_type = r.run(["blkid", "-p", "-o", "value", "-s", "TYPE", spec.device],
+                            readonly=True).stdout.strip()
+        if actual.casefold() != spec.fs_uuid.casefold() or actual_type != spec.fs:
+            raise KernelTableStale(f"mount source identity changed: {spec.device}")
+        options = list(spec.options)
+        if spec.old_subvolid is not None:
+            options.append(f"subvolid={subvol_maps[spec.fs_uuid][spec.old_subvolid]}")
+        command = ["mount", "-t", spec.fs]
+        if options:
+            command += ["-o", ",".join(options)]
+        command += [spec.device, str(target)]
+        op = journal.intend("mount_destination", {"fs_uuid": spec.fs_uuid},
+                            device=spec.device, path=str(target))
+        r.run(command)
+        journal.done(op, "mounted")
+        mounted.append(target)
+    return mounted

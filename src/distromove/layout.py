@@ -195,6 +195,7 @@ class InitGpt:
     logical_sector: int
     no_recognised_signatures: bool = True
     basis: str = "no recognised signatures"
+    typed_confirmation: str | None = None  # supplied by the caller after explicit user input
 
 
 @dataclass(frozen=True)
