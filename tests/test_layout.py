@@ -1,15 +1,18 @@
 import dataclasses
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from distromove import layout
-from distromove.layout import (ALIGN_BYTES, ESP_DEFAULT_BYTES, DiskInfo, EspChoice, FreeRegion,
-                               InitGpt, InsufficientSpace, MigrationPlan, NoTable, SourceSpaceLow,
-                               SpaceWatch, TablesChanged, TargetTooSmall, UnsupportedDisk,
-                               VolumeTarget, assert_tables_unchanged, estimate_min_bytes,
-                               fingerprint_tables, parse_parted_free, parse_wipefs, plan_init_gpt,
-                               plan_layout, scan_disk, source_snapshot_space_ok)
+from distromove.layout import (ALIGN_BYTES, ESP_DEFAULT_BYTES, DiskInfo, DiskReadError, EspChoice,
+                               FreeRegion, InitGpt, InsufficientSpace, MigrationPlan, NoTable,
+                               SourceSpaceLow, SpaceWatch, TablesChanged, TablesNotApproved,
+                               TargetTooSmall, UnsupportedDisk, VolumeTarget,
+                               assert_tables_unchanged, disk_info, estimate_min_bytes,
+                               fingerprint_tables, init_gpt_blocker, parse_parted_free,
+                               parse_wipefs, plan_init_gpt, scan_disk, source_snapshot_space_ok,
+                               space_threshold_bytes)
 from distromove.model import (BtrfsInfo, Esp, LuksInfo, Partition, Source, Subvol, SwapRef, Volume)
 from distromove.runner import Runner
 
@@ -63,6 +66,31 @@ def region(start=2048, size_gib=250, disk="/dev/sdb", log=512):
 
 
 NEW_ESP = EspChoice("new", "/dev/sdb", ESP_DEFAULT_BYTES)
+
+
+FAKE_FP = "0" * 64
+ALL_DISKS = ("/dev/sdb", "/dev/sdd", "/dev/sde", "/dev/nvme1n1")
+
+
+def plan_layout(*args, approved_tables=None, **kwargs):
+    """layout.plan_layout with a dummy fingerprint for every disk unless the test gives its own."""
+    if approved_tables is None:
+        approved_tables = {d: FAKE_FP for d in ALL_DISKS}
+    return layout.plan_layout(*args, approved_tables=approved_tables, **kwargs)
+
+
+class FakeRunner(Runner):
+    """Runner whose read-only commands return a chosen (returncode, stdout, stderr)."""
+
+    def __init__(self, results):
+        super().__init__(dry_run=True)
+        self.results = dict(results)
+
+    def run(self, argv, **kwargs):
+        argv = [str(a) for a in argv]
+        self.calls.append(argv)
+        rc, out, err = self.results[tuple(argv)]
+        return subprocess.CompletedProcess(argv, rc, out, err)
 
 
 def seq_factory(values):
@@ -170,6 +198,15 @@ def test_btrfs_snapshots_and_metadata_counted():
     assert snap > plain
 
 
+def test_btrfs_millions_of_tiny_files_need_inode_metadata():
+    few = volume(fs="btrfs", apparent=5 * GIB, inodes=50_000)
+    many = volume(fs="btrfs", apparent=5 * GIB, inodes=4_000_000)
+    floor = 4_000_000 * layout.BTRFS_META_PER_INODE * layout.BTRFS_DUP_FACTOR
+    assert estimate_min_bytes(many, False) >= 5 * GIB + floor      # DUP metadata counted
+    assert estimate_min_bytes(many, False) > estimate_min_bytes(few, False) + 10 * GIB
+    assert estimate_min_bytes(few, False) < 8 * GIB                # few files: unchanged behaviour
+
+
 def test_boot_margin_smaller_than_root_margin():
     boot = estimate_min_bytes(volume(role="boot", apparent=300 * MIB, size=GIB, inodes=500), False)
     assert boot < 2 * GIB
@@ -183,6 +220,41 @@ def test_source_snapshot_space_ok():
     assert source_snapshot_space_ok(roomy) is True
     assert source_snapshot_space_ok(tight) is False
     assert source_snapshot_space_ok(volume(fs="ext4")) is True      # ext4 is frozen, no snapshot
+
+
+def btrfs_source(size, free):
+    return dataclasses.replace(volume(fs="btrfs", apparent=GIB, size=size), used_bytes=size - free)
+
+
+def test_snapshot_precheck_uses_the_space_watch_threshold():
+    # 1 GiB free on a large filesystem: the watch would trip at once, so the pre-check says no
+    assert source_snapshot_space_ok(btrfs_source(500 * GIB, GIB)) is False
+    # the pre-check and SpaceWatch share one rule: max(2 GiB, 5 % of the filesystem)
+    assert space_threshold_bytes(10 * GIB) == 2 * GIB
+    assert space_threshold_bytes(100 * GIB) == 5 * GIB
+    assert space_threshold_bytes(500 * GIB) == 25 * GIB
+
+
+def test_snapshot_precheck_boundary():
+    size = 100 * GIB                                   # threshold 5 GiB
+    assert source_snapshot_space_ok(btrfs_source(size, 5 * GIB)) is True
+    assert source_snapshot_space_ok(btrfs_source(size, 5 * GIB - 1)) is False
+    small = 10 * GIB                                   # threshold is the 2 GiB floor
+    assert source_snapshot_space_ok(btrfs_source(small, 2 * GIB)) is True
+    assert source_snapshot_space_ok(btrfs_source(small, 2 * GIB - 1)) is False
+
+
+def test_precheck_agrees_with_space_watch_at_the_boundary():
+    size = 100 * GIB
+    for free, expect in ((5 * GIB, True), (5 * GIB - 4096, False)):
+        r = Runner(dry_run=True, fixtures=stat_fixture("/", 4096, size // 4096, free // 4096))
+        try:
+            SpaceWatch(r, "/").check()
+            watch_ok = True
+        except SourceSpaceLow:
+            watch_ok = False
+        assert watch_ok is expect
+        assert source_snapshot_space_ok(btrfs_source(size, free)) is expect
 
 
 # ---------------------------------------------------------------- planning
@@ -395,3 +467,174 @@ def test_space_watch_raises_below_threshold():
     assert exc.value.threshold_bytes == 5 * GIB
     # explicit threshold wins
     assert SpaceWatch(big, "/", threshold_bytes=GIB).check() is None
+
+
+# ---------------------------------------------------------------- fail closed: approvals
+
+def test_plan_layout_requires_a_fingerprint_for_every_destination_disk():
+    v = volume(apparent=5 * GIB)
+    args = (source([v]), [VolumeTarget(v, "/dev/sdb", 20 * GIB)], NEW_ESP, [region(size_gib=100)])
+    with pytest.raises(TablesNotApproved) as exc:
+        layout.plan_layout(*args)                                       # nothing approved
+    assert exc.value.disks == ["/dev/sdb"]
+    with pytest.raises(TablesNotApproved):
+        layout.plan_layout(*args, approved_tables={"/dev/sdz": FAKE_FP})  # some other disk
+    with pytest.raises(TablesNotApproved):
+        layout.plan_layout(*args, approved_tables={"/dev/sdb": ""})       # empty fingerprint
+
+
+def test_plan_layout_second_disk_missing_is_named():
+    vols = [volume("root", apparent=5 * GIB), volume("home", apparent=5 * GIB)]
+    regions = [region(size_gib=100), region(size_gib=100, disk="/dev/sdd")]
+    targets = [VolumeTarget(vols[0], "/dev/sdb", 20 * GIB), VolumeTarget(vols[1], "/dev/sdd", 20 * GIB)]
+    with pytest.raises(TablesNotApproved) as exc:
+        layout.plan_layout(source(vols), targets, NEW_ESP, regions, approved_tables={"/dev/sdb": FAKE_FP})
+    assert exc.value.disks == ["/dev/sdd"]
+
+
+def test_init_gpt_disk_needs_a_fingerprint_too():
+    init = plan_init_gpt(DiskInfo("/dev/sdd", 250 * GIB, 512, (), serial="INV0042"))
+    v = volume(apparent=5 * GIB)
+    with pytest.raises(TablesNotApproved) as exc:
+        layout.plan_layout(source([v]), [VolumeTarget(v, "/dev/sdd", 20 * GIB)],
+                           EspChoice("reuse", "/dev/sdd", 0), [], init_gpt=[init],
+                           approved_tables={"/dev/sdb": FAKE_FP})
+    assert exc.value.disks == ["/dev/sdd"]
+
+
+def test_assert_tables_unchanged_fails_closed_on_missing_fingerprints():
+    fixtures = {SFDISK: TABLE, WIPEFS: fx("wipefs_gpt.json")}
+    r = Runner(dry_run=True, fixtures=fixtures)
+    plan = plan_with(fingerprint_tables(r, ["/dev/sdb"]))
+    empty = dataclasses.replace(plan, approved_tables={})
+    with pytest.raises(TablesNotApproved):
+        assert_tables_unchanged(Runner(dry_run=True, fixtures=fixtures), empty)
+    other = dataclasses.replace(plan, approved_tables={"/dev/sdz": FAKE_FP})
+    with pytest.raises(TablesNotApproved) as exc:
+        assert_tables_unchanged(Runner(dry_run=True, fixtures=fixtures), other)
+    assert exc.value.disks == ["/dev/sdb"]
+
+
+# ---------------------------------------------------------------- fail closed: reads
+
+PARTED_SDD = ("parted", "-m", "-s", "/dev/sdd", "unit", "s", "print", "free")
+WIPEFS_SDD = ("wipefs", "-J", "/dev/sdd")
+
+
+def test_wipefs_failure_is_unknown_not_clean():
+    ok = FakeRunner({PARTED_SDD: (1, fx("parted_free_notable.txt"), ""),
+                     WIPEFS_SDD: (0, fx("wipefs_none.txt"), "")})
+    with pytest.raises(NoTable) as exc:
+        scan_disk(ok, "/dev/sdd")
+    assert exc.value.can_init is True                       # control: readable and clean
+
+    failed = FakeRunner({PARTED_SDD: (1, fx("parted_free_notable.txt"), ""),
+                         WIPEFS_SDD: (1, "", "wipefs: error: /dev/sdd: probing initialization failed")})
+    with pytest.raises(NoTable) as exc:
+        scan_disk(failed, "/dev/sdd")
+    assert exc.value.can_init is False and exc.value.reason == "signatures_unknown"
+
+    garbled = FakeRunner({PARTED_SDD: (1, fx("parted_free_notable.txt"), ""),
+                          WIPEFS_SDD: (0, "{not json", "")})
+    with pytest.raises(NoTable) as exc:
+        scan_disk(garbled, "/dev/sdd")
+    assert exc.value.can_init is False
+
+
+def test_no_table_with_signatures_reports_the_reason():
+    with pytest.raises(NoTable) as exc:
+        parse_parted_free(fx("parted_free_notable.txt"), "/dev/sdd", signatures=["ext4"])
+    assert exc.value.reason == "signatures_found"
+
+
+def test_parted_failure_on_a_disk_with_a_table_raises():
+    bad = FakeRunner({PARTED_SDD: (1, fx("parted_free_gpt512.txt"), "Error: cannot read")})
+    with pytest.raises(DiskReadError):
+        scan_disk(bad, "/dev/sdd")
+    gone = FakeRunner({PARTED_SDD: (1, "", "Error: Could not stat device /dev/sdd")})
+    with pytest.raises(DiskReadError):
+        scan_disk(gone, "/dev/sdd")
+
+
+LSBLK_SDD = tuple(layout.LSBLK_DISK + ["/dev/sdd"])
+LSBLK_JSON = ('{"blockdevices": [{"name": "sdd", "kname": "sdd", "path": "/dev/sdd", "size": 250059350016,'
+              ' "log-sec": 512, "serial": "INV0042", "wwn": "0x5000c500aaaa0042", "model": "Invented Disk"}]}')
+
+
+def test_disk_info_populates_hardware_identity(tmp_path):
+    by_id = tmp_path / "dev/disk/by-id"
+    by_id.mkdir(parents=True)
+    (by_id / "ata-INVENTED_DISK_INV0042").symlink_to("../../sdd")
+    r = FakeRunner({LSBLK_SDD: (0, LSBLK_JSON, ""), WIPEFS_SDD: (0, "", "")})
+    info = disk_info(r, "/dev/sdd", root=tmp_path)
+    assert (info.serial, info.wwn, info.model) == ("INV0042", "0x5000c500aaaa0042", "Invented Disk")
+    assert info.by_id == "/dev/disk/by-id/ata-INVENTED_DISK_INV0042"
+    assert (info.size_bytes, info.logical_sector, info.signatures) == (250059350016, 512, ())
+    init = plan_init_gpt(info)
+    assert init.confirmation == "INV0042"
+
+
+def test_disk_info_wipefs_failure_gives_unknown_signatures(tmp_path):
+    r = FakeRunner({LSBLK_SDD: (0, LSBLK_JSON, ""), WIPEFS_SDD: (1, "", "error")})
+    info = disk_info(r, "/dev/sdd", root=tmp_path)
+    assert info.signatures is None
+    assert plan_init_gpt(info) is None and init_gpt_blocker(info) == "signatures_unknown"
+
+
+def test_disk_info_lsblk_failure_raises(tmp_path):
+    r = FakeRunner({LSBLK_SDD: (32, "", "lsblk: /dev/sdd: not a block device"),
+                    WIPEFS_SDD: (0, "", "")})
+    with pytest.raises(DiskReadError):
+        disk_info(r, "/dev/sdd", root=tmp_path)
+    partial = FakeRunner({LSBLK_SDD: (1, LSBLK_JSON, "lsblk: warning"), WIPEFS_SDD: (0, "", "")})
+    with pytest.raises(DiskReadError):          # a failing command is not trusted even with output
+        disk_info(partial, "/dev/sdd", root=tmp_path)
+
+
+def test_init_gpt_requires_a_hardware_identity():
+    bare = DiskInfo(path="/dev/sdd", size_bytes=250 * GIB, logical_sector=512, signatures=())
+    assert plan_init_gpt(bare) is None
+    assert init_gpt_blocker(bare) == "no_hardware_identity"
+    blank = dataclasses.replace(bare, serial="", wwn=None, by_id=None)
+    assert plan_init_gpt(blank) is None
+    by_id = plan_init_gpt(dataclasses.replace(bare, by_id="/dev/disk/by-id/ata-INVENTED_INV0042"))
+    assert by_id.confirmation == "ata-INVENTED_INV0042"
+    wwn = plan_init_gpt(dataclasses.replace(bare, wwn="0x5000c500aaaa0042"))
+    assert wwn.confirmation == "0x5000c500aaaa0042"
+    for info in (bare, dataclasses.replace(bare, serial="INV0042")):
+        init = plan_init_gpt(info)
+        assert init is None or init.confirmation not in ("sdd", "/dev/sdd")
+    assert init_gpt_blocker(dataclasses.replace(bare, serial="INV0042")) is None
+    assert init_gpt_blocker(dataclasses.replace(bare, serial="INV0042", signatures=("gpt",))) == "signatures_found"
+
+
+SFDISK_SDB = ("sfdisk", "--dump", "/dev/sdb")
+WIPEFS_SDB = ("wipefs", "-J", "/dev/sdb")
+
+
+def test_fingerprint_wipefs_failure_raises_not_hashed():
+    r = FakeRunner({WIPEFS_SDB: (1, "", "wipefs: cannot open"), SFDISK_SDB: (0, TABLE, "")})
+    with pytest.raises(DiskReadError) as exc:
+        fingerprint_tables(r, ["/dev/sdb"])
+    assert exc.value.command == "wipefs"
+
+
+def test_fingerprint_sfdisk_failure_on_a_disk_with_a_table_raises():
+    r = FakeRunner({WIPEFS_SDB: (0, fx("wipefs_gpt.json"), ""), SFDISK_SDB: (1, "", "sfdisk: failed")})
+    with pytest.raises(DiskReadError) as exc:
+        fingerprint_tables(r, ["/dev/sdb"])
+    assert exc.value.command == "sfdisk"
+
+
+def test_fingerprint_blank_disk_sfdisk_failure_is_allowed():
+    blank = FakeRunner({WIPEFS_SDB: (0, "", ""), SFDISK_SDB: (1, "", "sfdisk: no partition table")})
+    fp = fingerprint_tables(blank, ["/dev/sdb"])
+    assert len(fp["/dev/sdb"]) == 64
+
+
+def test_assert_tables_unchanged_read_failure_raises_not_equal_hash():
+    ok = FakeRunner({WIPEFS_SDB: (0, fx("wipefs_gpt.json"), ""), SFDISK_SDB: (0, TABLE, "")})
+    plan = plan_with(fingerprint_tables(ok, ["/dev/sdb"]))
+    broken = FakeRunner({WIPEFS_SDB: (1, "", "gone"), SFDISK_SDB: (1, "", "gone")})
+    with pytest.raises(DiskReadError):
+        assert_tables_unchanged(broken, plan)

@@ -15,15 +15,18 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterable, Literal
 
 from .model import PlannedIdentity, Source, SwapRef, Volume
+from .probe import _disk_links
 from .runner import Runner
 
 __all__ = [
     "ALIGN_BYTES", "ESP_DEFAULT_BYTES", "LUKS2_HEADER_BYTES", "BYTES_PER_INODE",
     "BTRFS_META_MIN_BYTES", "BOOT_MARGIN_MIN_BYTES", "FreeRegion", "DiskInfo", "NoTable",
     "UnsupportedDisk", "InsufficientSpace", "TargetTooSmall", "TablesChanged", "SourceSpaceLow",
+    "DiskReadError", "TablesNotApproved", "space_threshold_bytes", "init_gpt_blocker",
     "VolumeTarget", "EspChoice", "Partplan", "InitGpt", "MigrationPlan", "SpaceWatch",
     "parse_parted_free", "parse_wipefs", "scan_disk", "disk_info", "estimate_min_bytes",
     "source_snapshot_space_ok", "plan_init_gpt", "plan_layout", "fingerprint_tables",
@@ -43,15 +46,22 @@ BOOT_MARGIN_MIN_BYTES = 256 * MIB       # smallest margin of a separate /boot vo
 MARGIN_FRACTION = 0.05                  # margin as a fraction of the filesystem content
 BTRFS_META_MIN_BYTES = 256 * MIB        # btrfs metadata allowance, at least
 BTRFS_META_FRACTION = 0.03              # ... or this fraction of the data
+BTRFS_META_PER_INODE = 2048             # metadata per file on btrfs (inode, reference, directory
+                                        # entries, extent item, leaf slack), deliberately generous
+BTRFS_DUP_FACTOR = 2                    # single-device mkfs keeps metadata twice (DUP profile)
 BTRFS_SUBVOL_BYTES = 16 * MIB           # extra metadata per subvolume carried over as a snapshot
 EXT4_OVERHEAD_FRACTION = 0.04           # inode tables, bitmaps and reserved metadata
 EXT4_JOURNAL_BYTES = 128 * MIB
 BYTES_PER_INODE = 16384                 # mke2fs default ratio: one inode per 16 KiB of space
 INODE_SLACK = 1.10                      # headroom on the inode count of the source
-SOURCE_SNAPSHOT_MIN_FREE_BYTES = 512 * MIB   # free space the source needs to take a snapshot
 
-SPACE_WATCH_MIN_BYTES = 2 * GIB         # SpaceWatch threshold: at least 2 GiB ...
+SPACE_WATCH_MIN_BYTES = 2 * GIB         # free-space floor of the source: at least 2 GiB ...
 SPACE_WATCH_FRACTION = 0.05             # ... or 5 % of the filesystem, whichever is larger
+
+# Why a disk may not be initialised (see init_gpt_blocker)
+BLOCK_SIGNATURES = "signatures_found"
+BLOCK_UNKNOWN = "signatures_unknown"
+BLOCK_NO_IDENTITY = "no_hardware_identity"
 
 
 # --------------------------------------------------------------------------- exceptions
@@ -68,9 +78,26 @@ class NoTable(Exception):
     """The disk has no partition table. ``can_init`` is true only when ``wipefs`` also
     reports no recognised signature at all."""
 
-    def __init__(self, disk: str, can_init: bool):
+    def __init__(self, disk: str, can_init: bool, reason: str | None = None):
         super().__init__(f"{disk} has no partition table")
         self.disk, self.can_init = disk, can_init
+        self.reason = reason            # why not initialisable: BLOCK_SIGNATURES or BLOCK_UNKNOWN
+
+
+class DiskReadError(Exception):
+    """A read-only command on a disk failed; what it would have said is not known."""
+
+    def __init__(self, disk: str, command: str, detail: str = ""):
+        super().__init__(f"cannot read {disk} ({command})" + (f": {detail}" if detail else ""))
+        self.disk, self.command, self.detail = disk, command, detail
+
+
+class TablesNotApproved(ValueError):
+    """A destination disk has no approved table fingerprint, so a change could not be seen."""
+
+    def __init__(self, disks: list[str]):
+        super().__init__("no approved table fingerprint for: " + ", ".join(disks))
+        self.disks = list(disks)
 
 
 class InsufficientSpace(Exception):
@@ -235,7 +262,10 @@ def parse_parted_free(text: str, disk: str, *, signatures: Iterable[str] | None 
     header, rows = _parted_rows(text)
     table = header[5] if len(header) > 5 else ""
     if table == "unknown":
-        raise NoTable(disk, can_init=signatures is not None and not list(signatures))
+        if signatures is None:
+            raise NoTable(disk, False, BLOCK_UNKNOWN)
+        found = list(signatures)
+        raise NoTable(disk, not found, BLOCK_SIGNATURES if found else None)
     if table != "gpt":
         raise UnsupportedDisk(f"{disk} uses a {table or 'unknown'} partition table; only GPT is supported",
                               disk, table)
@@ -244,24 +274,59 @@ def parse_parted_free(text: str, disk: str, *, signatures: Iterable[str] | None 
             for row in rows if len(row) > 4 and row[4] == "free"]
 
 
+def _read_signatures(r: Runner, disk: str) -> list[str] | None:
+    """wipefs signature types of ``disk``; ``None`` when wipefs failed or printed nonsense
+    (unknown is never the same as clean)."""
+    proc = r.run(_wipefs_cmd(disk), check=False, readonly=True)
+    if proc.returncode != 0:
+        return None
+    try:
+        return parse_wipefs(proc.stdout)
+    except (ValueError, AttributeError):
+        return None
+
+
 def scan_disk(r: Runner, disk: str) -> list[FreeRegion]:
-    """Free regions of ``disk``, read with read-only commands."""
-    out = r.run(_parted_cmd(disk), check=False, readonly=True).stdout
-    header, _ = _parted_rows(out)
+    """Free regions of ``disk``, read with read-only commands.
+
+    ``DiskReadError`` when parted fails on a disk that has a table or prints nothing.
+    """
+    proc = r.run(_parted_cmd(disk), check=False, readonly=True)
+    try:
+        header, _ = _parted_rows(proc.stdout)
+    except UnsupportedDisk:
+        raise DiskReadError(disk, "parted", proc.stderr.strip()) from None
+    table = header[5] if len(header) > 5 else ""
     signatures = None
-    if len(header) > 5 and header[5] == "unknown":
-        signatures = parse_wipefs(r.run(_wipefs_cmd(disk), check=False, readonly=True).stdout)
-    return parse_parted_free(out, disk, signatures=signatures)
+    if table == "unknown":
+        signatures = _read_signatures(r, disk)
+    elif proc.returncode != 0:
+        raise DiskReadError(disk, "parted", proc.stderr.strip())
+    return parse_parted_free(proc.stdout, disk, signatures=signatures)
 
 
-def disk_info(r: Runner, disk: str) -> DiskInfo:
-    """Size, sector size, model and wipefs signatures of a disk (serial/WWN come from lsblk)."""
-    out = r.run(_parted_cmd(disk), check=False, readonly=True).stdout
-    header, _ = _parted_rows(out)
-    logical = int(header[3])
-    size = _value(header[1], logical) * logical
-    sigs = tuple(parse_wipefs(r.run(_wipefs_cmd(disk), check=False, readonly=True).stdout))
-    return DiskInfo(disk, size, logical, sigs, model=header[6] if len(header) > 6 and header[6] else None)
+LSBLK_DISK = ["lsblk", "--json", "--bytes", "--nodeps", "--output",
+              "NAME,KNAME,PATH,SIZE,LOG-SEC,SERIAL,WWN,MODEL"]
+
+
+def disk_info(r: Runner, disk: str, root: Path = Path("/")) -> DiskInfo:
+    """Size, sector size, model, serial, WWN, by-id link and wipefs signatures of a disk.
+
+    ``signatures`` is ``None`` when wipefs failed. ``DiskReadError`` when lsblk fails.
+    """
+    proc = r.run(LSBLK_DISK + [disk], check=False, readonly=True)
+    try:
+        row = json.loads(proc.stdout)["blockdevices"][0]
+        if proc.returncode != 0:
+            raise ValueError
+        size, log = int(row["size"]), int(row.get("log-sec") or 512)
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise DiskReadError(disk, "lsblk", proc.stderr.strip()) from None
+    clean = lambda v: (str(v).strip() or None) if v is not None else None   # noqa: E731
+    sigs = _read_signatures(r, disk)
+    return DiskInfo(disk, size, log, None if sigs is None else tuple(sigs),
+                    serial=clean(row.get("serial")), wwn=clean(row.get("wwn")),
+                    by_id=_disk_links(root).get(row.get("kname") or ""), model=clean(row.get("model")))
 
 
 # --------------------------------------------------------------------------- estimate
@@ -276,7 +341,8 @@ def estimate_min_bytes(volume: Volume, source_snapshots: bool) -> int:
     The content is the APPARENT size of the files (``volume.apparent_bytes``), not the
     blocks in use, so sparse files and compression on the source do not distort it.
 
-        btrfs : apparent + max(256 MiB, 3 % of apparent) metadata
+        btrfs : apparent + metadata, the largest of 256 MiB, 3 % of apparent and
+                ``used_inodes`` x 2 KiB x 2 (DUP metadata) x 1.10
                 (+ 16 MiB per subvolume when ``source_snapshots``: every subvolume is
                 carried over as its own tree)
         other : apparent + 4 % metadata + 128 MiB journal, but never less than
@@ -291,7 +357,8 @@ def estimate_min_bytes(volume: Volume, source_snapshots: bool) -> int:
     """
     data = volume.apparent_bytes
     if volume.fs == "btrfs":
-        content = data + max(BTRFS_META_MIN_BYTES, int(data * BTRFS_META_FRACTION))
+        inode_meta = int(volume.used_inodes * BTRFS_META_PER_INODE * BTRFS_DUP_FACTOR * INODE_SLACK)
+        content = data + max(BTRFS_META_MIN_BYTES, int(data * BTRFS_META_FRACTION), inode_meta)
         if source_snapshots and volume.btrfs is not None:
             content += len(volume.btrfs.subvolumes) * BTRFS_SUBVOL_BYTES
     else:
@@ -304,13 +371,22 @@ def estimate_min_bytes(volume: Volume, source_snapshots: bool) -> int:
     return _align_up(total, ALIGN_BYTES)
 
 
+def space_threshold_bytes(filesystem_bytes: int) -> int:
+    """Free space the source must keep: the larger of 2 GiB and 5 % of the filesystem.
+
+    One rule for the snapshot pre-check and for ``SpaceWatch``, so a source that passes the
+    first is not stopped by the second at once.
+    """
+    return max(SPACE_WATCH_MIN_BYTES, int(filesystem_bytes * SPACE_WATCH_FRACTION))
+
+
 def source_snapshot_space_ok(volume: Volume) -> bool:
-    """A btrfs source needs some free space to take its read-only snapshot; other
-    filesystems are copied frozen and need none."""
+    """A btrfs source needs at least ``space_threshold_bytes`` free to take its read-only
+    snapshot and survive the copy; other filesystems are copied frozen and need none."""
     if volume.fs != "btrfs":
         return True
     capacity = volume.partition.size_bytes - (LUKS2_HEADER_BYTES if volume.luks else 0)
-    return capacity - volume.used_bytes >= SOURCE_SNAPSHOT_MIN_FREE_BYTES
+    return capacity - volume.used_bytes >= space_threshold_bytes(capacity)
 
 
 # --------------------------------------------------------------------------- identities
@@ -344,15 +420,41 @@ class _Identities:
 
 # --------------------------------------------------------------------------- planning
 
+def init_gpt_blocker(info: DiskInfo) -> str | None:
+    """Why ``info`` may not be initialised (a stable code the GUI can show), or ``None``.
+
+    BLOCK_UNKNOWN: wipefs could not be read; BLOCK_SIGNATURES: a recognised signature is
+    present; BLOCK_NO_IDENTITY: no serial, WWN or by-id name to tie the typed confirmation to.
+    """
+    if info.signatures is None:
+        return BLOCK_UNKNOWN
+    if list(info.signatures):
+        return BLOCK_SIGNATURES
+    if not _confirmation(info):
+        return BLOCK_NO_IDENTITY
+    return None
+
+
+def _confirmation(info: DiskInfo) -> str | None:
+    """Hardware identity to type: serial, WWN or by-id name; never the kernel name."""
+    if info.serial:
+        return info.serial
+    if info.wwn:
+        return info.wwn
+    if info.by_id:
+        return info.by_id.rsplit("/", 1)[-1]
+    return None
+
+
 def plan_init_gpt(info: DiskInfo) -> InitGpt | None:
-    """An ``InitGpt`` only when ``wipefs`` read the disk and found no recognised signature."""
-    if info.signatures is None or list(info.signatures):
+    """An ``InitGpt`` only when ``wipefs`` read the disk, found no recognised signature and
+    the disk has a hardware identity; otherwise ``None`` (see ``init_gpt_blocker``)."""
+    if init_gpt_blocker(info) is not None:
         return None
     gib = info.size_bytes / GIB
     parts = [p for p in (info.model, info.serial or info.wwn or info.by_id, info.path) if p]
     identity = " ".join(parts) + f" ({gib:.1f} GiB)"
-    confirmation = info.serial or info.wwn or (info.by_id or info.path).rsplit("/", 1)[-1]
-    return InitGpt(info.path, identity, confirmation, info.size_bytes, info.logical_sector)
+    return InitGpt(info.path, identity, _confirmation(info) or "", info.size_bytes, info.logical_sector)
 
 
 def _gpt_region(init: InitGpt) -> FreeRegion:
@@ -403,7 +505,8 @@ def plan_layout(source: Source, targets: list[VolumeTarget], esp: EspChoice,
     contribute their whole usable area. Order: ESP, volumes in the order of ``targets``,
     swap partitions (on the disk of the root volume). Raises ``TargetTooSmall`` when a
     chosen size is below the estimate, ``InsufficientSpace`` when something does not fit.
-    ``approved_tables`` (see ``fingerprint_tables``) is stored in the plan.
+    ``approved_tables`` (see ``fingerprint_tables``) is stored in the plan and must hold a
+    fingerprint for every disk something is created on (``TablesNotApproved`` otherwise).
     """
     init = list(init_gpt)
     space = _Space(list(regions) + [_gpt_region(i) for i in init])
@@ -431,26 +534,65 @@ def plan_layout(source: Source, targets: list[VolumeTarget], esp: EspChoice,
             start, size, log = space.take(swap_disk, _swap_bytes(sw), "swap")
             swaps.append(Partplan(swap_disk, start, size, "swap",
                                   ids.planned(encrypted=sw.luks is not None), sw.volume_id, log))
-    return MigrationPlan(list(targets), esp, partitions, swaps, dict(approved_tables or {}), init)
+    plan = MigrationPlan(list(targets), esp, partitions, swaps, dict(approved_tables or {}), init)
+    missing = _unapproved(plan)
+    if missing:
+        raise TablesNotApproved(missing)
+    return plan
 
 
 # --------------------------------------------------------------------------- stale plan
 
+_TABLE_SIGNATURES = {"gpt", "PMBR", "dos"}
+
+
 def _fingerprint(r: Runner, disk: str) -> str:
-    table = r.run(_sfdisk_cmd(disk), check=False, readonly=True).stdout
-    sigs = r.run(_wipefs_cmd(disk), check=False, readonly=True).stdout
-    blob = f"table\n{table}\nsignatures\n{sigs}"
+    """Hash of the sfdisk dump and the wipefs signatures. A failed read raises
+    ``DiskReadError``; only a disk wipefs reports as having no table may have a failing
+    sfdisk (it has nothing to dump)."""
+    wipe = r.run(_wipefs_cmd(disk), check=False, readonly=True)
+    if wipe.returncode != 0:
+        raise DiskReadError(disk, "wipefs", wipe.stderr.strip())
+    try:
+        types = set(parse_wipefs(wipe.stdout))
+    except ValueError:
+        raise DiskReadError(disk, "wipefs", "unreadable output") from None
+    dump = r.run(_sfdisk_cmd(disk), check=False, readonly=True)
+    if dump.returncode != 0 and types & _TABLE_SIGNATURES:
+        raise DiskReadError(disk, "sfdisk", dump.stderr.strip())
+    table = dump.stdout if dump.returncode == 0 else ""
+    blob = f"table\n{table}\nsignatures\n{wipe.stdout}"
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def fingerprint_tables(r: Runner, disks: Iterable[str]) -> dict[str, str]:
-    """A stable hash of the partition table dump and signatures of each disk."""
+    """A stable hash of the partition table dump and signatures of each disk
+    (``DiskReadError`` if a disk cannot be read)."""
     return {d: _fingerprint(r, d) for d in disks}
 
 
+def plan_disks(plan: MigrationPlan) -> list[str]:
+    """Every disk the plan creates something on."""
+    disks = [p.disk for p in plan.partitions] + [p.disk for p in plan.swaps]
+    disks += [i.disk for i in plan.init_gpt]
+    return sorted(set(disks))
+
+
+def _unapproved(plan: MigrationPlan) -> list[str]:
+    return [d for d in plan_disks(plan) if not plan.approved_tables.get(d)]
+
+
 def assert_tables_unchanged(r: Runner, plan: MigrationPlan) -> None:
-    """Read every approved destination disk again; ``TablesChanged`` if any differs."""
-    changed = [d for d, fp in plan.approved_tables.items() if _fingerprint(r, d) != fp]
+    """Read every destination disk again; ``TablesChanged`` if any differs.
+
+    Fails closed: ``TablesNotApproved`` when a destination disk of the plan has no approved
+    fingerprint, ``DiskReadError`` when a disk cannot be read.
+    """
+    missing = _unapproved(plan)
+    if missing:
+        raise TablesNotApproved(missing)
+    disks = sorted(set(plan.approved_tables) | set(plan_disks(plan)))
+    changed = [d for d in disks if _fingerprint(r, d) != plan.approved_tables[d]]
     if changed:
         raise TablesChanged(changed)
 
@@ -474,6 +616,6 @@ class SpaceWatch:
         total, free = self._read()
         threshold = self.threshold_bytes
         if threshold is None:
-            threshold = max(SPACE_WATCH_MIN_BYTES, int(total * SPACE_WATCH_FRACTION))
+            threshold = space_threshold_bytes(total)
         if free < threshold:
             raise SourceSpaceLow(self.mountpoint, free, threshold)
