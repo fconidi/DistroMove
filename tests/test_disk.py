@@ -7,12 +7,13 @@ import subprocess
 import pytest
 
 from distromove.disk import (GrubCaps, KernelTableStale, UnsafeKeyfile, UnsupportedKdf,
-                             create_partitions, validate_crypto_plan)
+                             add_keyfile, create_partitions, luks_format, luks_open, make_fs,
+                             prove_unlock, validate_crypto_plan)
 from distromove.journal import Journal, read_journal
 from distromove.layout import (EspChoice, MigrationPlan, Partplan, TablesChanged,
                                 fingerprint_tables)
-from distromove.model import (Esp, Keyslot, LuksInfo, Partition, PlannedIdentity, Source,
-                              SwapRef, Volume)
+from distromove.model import (CreatedPartition, Esp, Keyslot, LuksInfo, Partition,
+                              PlannedIdentity, Source, SwapRef, Volume)
 
 
 def partition():
@@ -189,3 +190,116 @@ def test_preexisting_partition_change_stops(tmp_path):
     with pytest.raises(KernelTableStale, match="pre-existing"):
         create_partitions(r, partition_plan(r),
                           Journal(tmp_path / "j", host_root_uuid="host-root"))
+
+
+class CryptoRunner:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, argv, *, input=None, secret_input=False, readonly=False, **_kwargs):
+        argv = [str(arg) for arg in argv]
+        self.calls.append((argv, input, secret_input, readonly))
+        if argv[:2] == ["lsblk", "--json"]:
+            out = json.dumps({"blockdevices": [{"path": "/dev/vdb2", "type": "part",
+                                                 "partuuid": "new-part", "start": 8192,
+                                                 "size": 8192 * 512, "log-sec": 512}]})
+        elif argv[:2] == ["cryptsetup", "luksUUID"]:
+            out = "new-luks\n"
+        elif argv[:2] == ["blkid", "-p"]:
+            out = "new-fs\n" if "UUID" in argv else "ext4\n"
+        elif argv[0] in {"cryptsetup", "mkfs.ext4", "mkfs.btrfs"}:
+            out = ""
+        else:
+            raise AssertionError(f"unexpected command: {argv}")
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+
+def created_partition():
+    return CreatedPartition("root", "/dev/vdb2", "new-part", 8192, 8192,
+                            "new-luks", "new-fs")
+
+
+def crypto_plan():
+    return validate_crypto_plan(source(root_luks=luks("pbkdf2"),
+                                       boot_inside_luks=True), CAPS)
+
+
+def test_luks_params_copied_and_uuid_preassigned(tmp_path):
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", host_root_uuid="host-root")
+    result = luks_format(r, {"root": created_partition()}, crypto_plan(), "root", b"secret", j)
+    assert result == "new-luks"
+    command = next(argv for argv, _, _, _ in r.calls if argv[:2] == ["cryptsetup", "luksFormat"])
+    assert ["--type", "luks2"] == command[2:4]
+    assert ["--cipher", "aes-xts-plain64"] == command[4:6]
+    assert ["--key-size", "512"] == command[6:8]
+    assert ["--sector-size", "512"] == command[8:10]
+    assert ["--uuid", "new-luks"] == command[10:12]
+    assert ["--pbkdf", "pbkdf2"] == command[12:14]
+    assert command[-1] == "/dev/vdb2"
+    assert command.index("--key-file") >= 0 and command[command.index("--key-file") + 1] == "-"
+
+
+def test_passphrase_only_on_stdin(tmp_path):
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", host_root_uuid="host-root")
+    secret = b"this is private"
+    luks_format(r, {"root": created_partition()}, crypto_plan(), "root", secret, j)
+    argv, data, scrub, _ = next(call for call in r.calls if call[0][:2] == ["cryptsetup", "luksFormat"])
+    assert data == secret and scrub is True
+    assert secret.decode() not in " ".join(argv)
+    assert secret.decode() not in j.path.read_text()
+
+
+def test_empty_passphrase_rejected(tmp_path):
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", host_root_uuid="host-root")
+    with pytest.raises(ValueError, match="passphrase"):
+        luks_format(r, {"root": created_partition()}, crypto_plan(), "root", b"", j)
+    assert not r.calls
+    assert not any(e["type"] == "intent" for e in read_journal(j.path))
+
+
+def test_unicode_and_newline_passphrase_verbatim(tmp_path):
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", host_root_uuid="host-root")
+    secret = "é\npass\n".encode()
+    luks_format(r, {"root": created_partition()}, crypto_plan(), "root", secret, j)
+    assert next(data for argv, data, _, _ in r.calls
+                if argv[:2] == ["cryptsetup", "luksFormat"]) == secret
+
+
+def test_keyfile_in_keyslot_and_unlock_proven(tmp_path):
+    keyfile = tmp_path / "keyfile"
+    keyfile.write_bytes(b"keyfile bytes")
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", host_root_uuid="host-root")
+    add_keyfile(r, "/dev/vdb2", keyfile, b"secret", j, luks_uuid="new-luks")
+    calls = [argv for argv, _, _, _ in r.calls if argv[:2] == ["cryptsetup", "luksAddKey"]]
+    assert len(calls) == 1 and str(keyfile) in calls[0]
+    tests = [argv for argv, _, _, _ in r.calls if argv[:2] == ["cryptsetup", "open"]
+             and "--test-passphrase" in argv]
+    assert any(str(keyfile) in argv for argv in tests)
+
+
+def test_luks_open_uses_new_mapper_name_and_journals(tmp_path):
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", migration_id="m1", host_root_uuid="host-root")
+    path = luks_open(r, created_partition(), b"secret", j)
+    assert path == "/dev/mapper/distromove-m1-root"
+    argv, data, secret, _ = next(call for call in r.calls if call[0][:2] == ["cryptsetup", "open"])
+    assert data == b"secret" and secret is True
+    assert "distromove-m1-root" in argv
+
+
+def test_mkfs_uses_preassigned_uuid_and_journal_authority(tmp_path):
+    r = CryptoRunner()
+    j = Journal(tmp_path / "j", host_root_uuid="host-root")
+    op = j.intend("create_partition", {"partuuid": "new-part", "fs_uuid": "new-fs"},
+                  creates="partition")
+    j.done(op, "created", path="/dev/vdb2")
+    assert make_fs(r, "/dev/vdb2", "ext4", "new-fs", j) == "new-fs"
+    assert any(argv == ["mkfs.ext4", "-U", "new-fs", "/dev/vdb2"]
+               for argv, _, _, _ in r.calls)
+    with pytest.raises(ValueError, match="journal"):
+        make_fs(r, "/dev/vda2", "ext4", "new-fs", j)

@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
+import re
 from typing import Literal
 
-from .journal import Journal
+from .journal import Journal, read_journal
 from .layout import MigrationPlan, Partplan, assert_tables_unchanged
 from .model import CreatedPartition, Keyslot, LuksInfo, Source
 from .probe import classify_keys
@@ -253,3 +255,163 @@ def create_partitions(r: Runner, plan: MigrationPlan,
                 part.planned.luks_uuid, part.planned.fs_uuid)
             journal.done(op_id, "created", path=row["node"])
     return created
+
+
+_PARTITION_ID = ["lsblk", "--json", "--bytes", "--list", "--output",
+                 "PATH,TYPE,PARTUUID,START,SIZE,LOG-SEC"]
+
+
+def _assert_created(r: Runner, created: CreatedPartition) -> None:
+    """Recheck the kernel identity immediately before touching a created partition."""
+    proc = r.run(_PARTITION_ID + [created.path], readonly=True)
+    try:
+        rows = json.loads(proc.stdout)["blockdevices"]
+        if len(rows) != 1:
+            raise ValueError
+        row = rows[0]
+        sector = int(row["log-sec"])
+        matches = (row["type"] == "part" and row["path"] == created.path and
+                   str(row["partuuid"]).casefold() == created.partuuid.casefold() and
+                   int(row["start"]) * 512 == created.start_sectors * sector and
+                   int(row["size"]) == created.size_sectors * sector)
+        if not matches:
+            raise ValueError
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        raise KernelTableStale(f"created partition identity changed: {created.path}") from exc
+
+
+def _passphrase(value: bytes) -> bytes:
+    if not isinstance(value, bytes) or not value or len(value) > 1024:
+        raise ValueError("passphrase must contain 1 to 1024 bytes")
+    return value
+
+
+def _luks_uuid(r: Runner, device: str, expected: str) -> None:
+    actual = r.run(["cryptsetup", "luksUUID", device], readonly=True).stdout.strip()
+    if not actual or actual.casefold() != expected.casefold():
+        raise KernelTableStale(f"LUKS identity differs on {device}")
+
+
+def luks_format(r: Runner, created: dict[str, CreatedPartition], crypto: CryptoPlan,
+                volume_id: str, passphrase: bytes, journal: Journal) -> str:
+    """Format a verified new partition with its preassigned LUKS UUID."""
+    secret = _passphrase(passphrase)
+    part = created[volume_id]
+    luks = crypto.luks_by_volume[volume_id]
+    slots = crypto.per_volume[volume_id]
+    if not part.luks_uuid or not slots or luks.version not in (1, 2):
+        raise ValueError("missing planned LUKS identity or keyslot")
+    if luks.version == 1 and slots[0].kdf != "pbkdf2":
+        raise UnsupportedKdf("LUKS1 requires PBKDF2")
+    _assert_created(r, part)
+    command = ["cryptsetup", "luksFormat", "--type", f"luks{luks.version}",
+               "--cipher", luks.cipher, "--key-size", str(luks.key_bits)]
+    if luks.version == 2:
+        command += ["--sector-size", str(luks.sector_size)]
+    command += ["--uuid", part.luks_uuid]
+    if luks.version == 2:
+        command += ["--pbkdf", slots[0].kdf]
+    command += ["--key-file", "-", "--batch-mode", part.path]
+    op = journal.intend("luks_format", {"partuuid": part.partuuid,
+                                        "luks_uuid": part.luks_uuid,
+                                        "fs_uuid": part.fs_uuid},
+                        creates="luks", device=part.path, volume_id=volume_id)
+    r.run(command, input=secret, secret_input=True)
+    _luks_uuid(r, part.path, part.luks_uuid)
+    journal.done(op, "created", device=part.path)
+    return part.luks_uuid
+
+
+def prove_unlock(r: Runner, device: str,
+                 credentials: bytes | Path | str) -> None:
+    """Verify a credential without activating a mapper."""
+    if isinstance(credentials, bytes):
+        secret = _passphrase(credentials)
+        r.run(["cryptsetup", "open", "--test-passphrase", "--key-file", "-", device],
+              input=secret, secret_input=True, readonly=True)
+    else:
+        path = Path(credentials)
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("keyfile must be a regular file")
+        r.run(["cryptsetup", "open", "--test-passphrase", "--key-file", str(path), device],
+              readonly=True)
+
+
+def add_keyfile(r: Runner, device: str, keyfile: Path | str, passphrase: bytes,
+                journal: Journal, *, luks_uuid: str, kdf: str | None = None) -> None:
+    """Add an existing file as a new keyslot, then prove it opens the container."""
+    secret = _passphrase(passphrase)
+    path = Path(keyfile)
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("keyfile must be a regular file")
+    _luks_uuid(r, device, luks_uuid)
+    command = ["cryptsetup", "luksAddKey", "--key-file", "-", "--new-keyfile", str(path)]
+    if kdf is not None:
+        if kdf not in {"pbkdf2", "argon2i", "argon2id"}:
+            raise UnsupportedKdf("unsupported keyfile KDF")
+        command += ["--pbkdf", kdf]
+    command += ["--batch-mode", device]
+    op = journal.intend("add_keyfile", {"luks_uuid": luks_uuid}, device=device,
+                        keyfile=str(path))
+    r.run(command, input=secret, secret_input=True)
+    prove_unlock(r, device, path)
+    journal.done(op, "added")
+
+
+def luks_open(r: Runner, created: CreatedPartition, passphrase: bytes,
+              journal: Journal) -> str:
+    """Open a new container under a migration-specific mapper name."""
+    secret = _passphrase(passphrase)
+    if not created.luks_uuid:
+        raise ValueError("partition has no planned LUKS UUID")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", created.volume_id):
+        raise ValueError("unsafe mapper name")
+    name = f"distromove-{journal.migration_id}-{created.volume_id}"
+    if len(name) > 127:
+        raise ValueError("mapper name is too long")
+    _assert_created(r, created)
+    _luks_uuid(r, created.path, created.luks_uuid)
+    op = journal.intend("luks_open", {"partuuid": created.partuuid,
+                                      "luks_uuid": created.luks_uuid,
+                                      "fs_uuid": created.fs_uuid},
+                        creates="mapper", device=created.path, mapper_name=name)
+    r.run(["cryptsetup", "open", "--type", "luks", "--key-file", "-",
+           created.path, name], input=secret, secret_input=True)
+    path = "/dev/mapper/" + name
+    journal.done(op, "opened", path=path)
+    return path
+
+
+def _journal_allows_fs(journal: Journal, device: str, fs_uuid: str) -> bool:
+    if not journal.is_current():
+        return False
+    entries = read_journal(journal.path)
+    intents = {entry["op_id"]: entry for entry in entries if entry["type"] == "intent"}
+    for entry in entries:
+        if entry["type"] != "outcome" or entry["outcome"] not in {"created", "opened"}:
+            continue
+        intent = intents.get(entry["op_id"])
+        if (intent and intent["identity"].get("fs_uuid", "").casefold() == fs_uuid.casefold()
+                and entry["fields"].get("path") == device
+                and intent["fields"].get("creates") in {"partition", "mapper"}):
+            return True
+    return False
+
+
+def make_fs(r: Runner, device: str, fs: str, fs_uuid: str, journal: Journal) -> str:
+    """Format only a device this migration's journal proves it created/opened."""
+    if fs not in {"ext4", "btrfs"} or not fs_uuid or not device.startswith("/dev/"):
+        raise ValueError("unsupported filesystem or device")
+    if not _journal_allows_fs(journal, device, fs_uuid):
+        raise ValueError("journal does not authorize formatting this device")
+    command = (["mkfs.ext4", "-U", fs_uuid, device] if fs == "ext4" else
+               ["mkfs.btrfs", "-U", fs_uuid, device])
+    op = journal.intend("make_fs", {"fs_uuid": fs_uuid}, creates="filesystem",
+                        device=device, fs=fs)
+    r.run(command)
+    actual = r.run(["blkid", "-p", "-o", "value", "-s", "UUID", device],
+                   readonly=True).stdout.strip()
+    if actual.casefold() != fs_uuid.casefold():
+        raise KernelTableStale(f"filesystem UUID differs on {device}")
+    journal.done(op, "created")
+    return fs_uuid
