@@ -119,7 +119,7 @@ def choose_bootloader_id(existing_dirs: set[str] | list[str], os_id: str) -> str
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", os_id):
         raise ValueError("unsafe OS identifier")
     taken = {name.casefold() for name in existing_dirs}
-    base = f"{os_id}-moved"
+    base = f"{os_id.lower()}-moved"
     for index in range(1, 10000):
         candidate = base if index == 1 else f"{base}-{index}"
         if candidate.casefold() not in taken:
