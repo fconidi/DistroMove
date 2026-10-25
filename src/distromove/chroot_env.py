@@ -71,6 +71,7 @@ class Chroot:
         self.journal = journal
         self._active = False
         self._root_source = ""
+        self._boot_source = ""
         self._esp_source = ""
 
     def __enter__(self) -> "Chroot":
@@ -82,10 +83,20 @@ class Chroot:
             path = root / name
             if not path.is_dir() or path.is_symlink() or path.resolve() != path:
                 raise ValueError(f"unsafe chroot mountpoint: {path}")
+        fstab = root / "etc/fstab"
+        if not fstab.is_file() or fstab.is_symlink():
+            raise ValueError("copied fstab is unavailable")
+        mounts = {parts[1] for line in fstab.read_text().splitlines()
+                  if not line.lstrip().startswith("#") and (parts := line.split())
+                  and len(parts) >= 2}
         if self.esp is not None:
             if self.esp != root / "boot/efi" or not self.esp.is_dir() or self.esp.is_symlink():
                 raise ValueError("ESP must be mounted at the copied system's /boot/efi")
+        elif "/boot/efi" in mounts:
+            raise ValueError("copied system requires a mounted ESP")
         self._root_source = _mount_source(self.r, root, {"ext4", "btrfs"})
+        if "/boot" in mounts:
+            self._boot_source = _mount_source(self.r, root / "boot", {"ext4", "btrfs"})
         if self.esp is not None:
             self._esp_source = _mount_source(self.r, self.esp, {"vfat"})
         if not self.journal.is_current():
@@ -102,9 +113,13 @@ class Chroot:
             raise ValueError("chroot command requires an active context and nonempty arguments")
         if _mount_source(self.r, self.root, {"ext4", "btrfs"}) != self._root_source:
             raise ValueError("chroot root mount changed")
+        if self._boot_source and _mount_source(self.r, self.root / "boot",
+                                               {"ext4", "btrfs"}) != self._boot_source:
+            raise ValueError("chroot boot mount changed")
         if self.esp is not None and _mount_source(self.r, self.esp, {"vfat"}) != self._esp_source:
             raise ValueError("chroot ESP mount changed")
         op = self.journal.intend("chroot_run", {"root_source": self._root_source,
+                                                "boot_source": self._boot_source,
                                                 "esp_source": self._esp_source},
                                  root=self.root, esp=self.esp)
         result = self.r.run(["unshare", "--mount", "--propagation", "private", "--fork",

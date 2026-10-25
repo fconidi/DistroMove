@@ -21,12 +21,13 @@ def source(kind="file", *, volume_id="swap-a", path="/swapfile", uuid="old-swap"
 def result(source, *, uuid="new-swap", containing="new-root", offset=None):
     return SwapResult(source.volume_id, source.kind, source.path, source.uuid,
                       "/new/swapfile", uuid, containing, offset, None,
-                      source.random_key, source.resume)
+                      source.random_key, source.resume, "old-root")
 
 
 def test_resume_uses_containing_device_for_file():
     old = source(resume=True)
     assert resume_target([result(old, offset=1234)], "UUID=old-swap") == ResumeTarget("new-root", 1234)
+    assert resume_target([result(old, offset=1234)], "UUID=old-root") == ResumeTarget("new-root", 1234)
 
 
 def test_random_key_swap_never_resume_target():

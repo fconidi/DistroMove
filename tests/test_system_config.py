@@ -1,5 +1,6 @@
 """Configuration tests use only copied trees in pytest's local cache."""
 from pathlib import Path
+from dataclasses import replace
 import json
 import subprocess
 
@@ -54,8 +55,21 @@ def test_apply_configs_raises_on_old_uuid_left(tmp_path):
     grub = copy.root / "etc/default/grub"
     grub.write_text('GRUB_CMDLINE_LINUX_DEFAULT="root=UUID=old-root other=old-luks"\n')
     with pytest.raises(OldUuidLeft):
-        apply_configs(copy, mapping(), [swap()])
+        apply_configs(copy, mapping(), [swap()], boot_in_luks=False)
     assert "old-root" in (copy.root / "etc/fstab").read_text()
+
+
+def test_apply_configs_requires_boot_crypto_classification(tmp_path):
+    copy = copied_root(tmp_path)
+    with pytest.raises(ValueError, match="boot encryption"):
+        apply_configs(copy, mapping(), [swap()])
+
+
+def test_random_key_swap_has_no_persistent_uuid_reference(tmp_path):
+    copy = copied_root(tmp_path)
+    with pytest.raises(ValueError, match="random-key"):
+        apply_configs(copy, mapping(), [replace(swap(), random_key=True, uuid=None)],
+                      boot_in_luks=False)
 
 
 def test_cryptodisk_flag_only_when_boot_in_luks(tmp_path):
@@ -74,6 +88,7 @@ def test_initramfs_hook_copies_crypttab_and_keyfile(tmp_path):
     key = copy.root / "etc/cryptsetup-keys.d/root.key"
     key.parent.mkdir()
     key.write_bytes(b"dummy secret")
+    key.chmod(0o600)
     crypto = CryptoPlan({}, {"root": "/etc/cryptsetup-keys.d/root.key"}, {},
                         {"root": "initramfs"}, {})
     install_crypt_hooks(copy, crypto, boot_in_luks=True)
@@ -92,11 +107,28 @@ def test_keyfile_not_in_unencrypted_boot(tmp_path):
     assert not (copy.root / "etc/initramfs-tools/hooks/distromove-crypt").exists()
 
 
+def test_initramfs_keyfile_must_be_private(tmp_path):
+    copy = copied_root(tmp_path)
+    key = copy.root / "etc/root.key"
+    key.write_bytes(b"dummy secret")
+    key.chmod(0o644)
+    crypto = CryptoPlan({}, {"root": "/etc/root.key"}, {}, {"root": "initramfs"}, {})
+    with pytest.raises(ValueError, match="other users"):
+        install_crypt_hooks(copy, crypto, boot_in_luks=True)
+
+
 def test_keyfile_after_root_not_in_initramfs(tmp_path):
     copy = copied_root(tmp_path)
     crypto = CryptoPlan({}, {"home": "/etc/home.key"}, {}, {"home": "after-root"}, {})
     install_crypt_hooks(copy, crypto, boot_in_luks=False)
     assert "/etc/home.key" not in (copy.root / "etc/initramfs-tools/hooks/distromove-crypt").read_text()
+
+
+def test_unclassified_crypttab_keyfile_is_refused(tmp_path):
+    copy = copied_root(tmp_path)
+    (copy.root / "etc/crypttab").write_text("root UUID=old-luks /etc/root.key luks\n")
+    with pytest.raises(ValueError, match="classification"):
+        install_crypt_hooks(copy)
 
 
 def test_all_kernels_rebuilt(tmp_path):

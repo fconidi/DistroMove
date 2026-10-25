@@ -99,18 +99,30 @@ def _root_old_uuid(fstab: str, m: UuidMap) -> str | None:
     return actual
 
 
+def _active_crypttab(text: str) -> list[list[str]]:
+    return [parts for line in text.splitlines()
+            if not line.lstrip().startswith("#") and (parts := line.split())]
+
+
 def apply_configs(chroot, m: UuidMap, swaps: list[SwapResult], *,
                   root_fs_uuid: str | None = None,
                   filesystem_by_mount: dict[str, str] | None = None,
-                  boot_in_luks: bool = False) -> None:
+                  boot_in_luks: bool | None = None) -> None:
     """Rewrite all boot-critical files in memory, validate, then write atomically."""
     fstab = _read(chroot, "etc/fstab")
     crypttab = _read(chroot, "etc/crypttab", required=False)
+    if boot_in_luks is None and _active_crypttab(crypttab):
+        raise ValueError("boot encryption classification is required")
+    boot_in_luks = bool(boot_in_luks)
     grub = _read(chroot, "etc/default/grub")
     resume_conf = _read(chroot, "etc/initramfs-tools/conf.d/resume", required=False)
     source_root_uuid = root_fs_uuid or _root_old_uuid(fstab, m)
     swap_ids = dict(m.swap_uuid)
     for swap in swaps:
+        if swap.random_key and swap.source_uuid and (
+                any(old.casefold() == swap.source_uuid.casefold() for old in swap_ids)
+                or swap.source_uuid.casefold() in fstab.casefold()):
+            raise ValueError("random-key swap cannot keep a persistent UUID reference")
         if swap.source_uuid and swap.uuid:
             prior = swap_ids.get(swap.source_uuid)
             if prior is not None and prior.casefold() != swap.uuid.casefold():
@@ -144,6 +156,11 @@ def install_crypt_hooks(chroot, crypto: CryptoPlan | None = None,
                         *, boot_in_luks: bool = False) -> None:
     """Include crypttab and only approved early keyfiles in every new initramfs."""
     crypto = crypto or CryptoPlan({}, {}, {}, {}, {})
+    crypttab = _read(chroot, "etc/crypttab", required=True)
+    specified_keys = {parts[2] for parts in _active_crypttab(crypttab)
+                      if len(parts) >= 3 and parts[2] not in {"none", "-", "/dev/urandom"}}
+    if specified_keys - set(crypto.keyfiles.values()):
+        raise ValueError("crypttab keyfile lacks an approved classification")
     early = []
     for volume_id, keyfile in crypto.keyfiles.items():
         kind = crypto.key_class.get(volume_id)
@@ -157,10 +174,10 @@ def install_crypt_hooks(chroot, crypto: CryptoPlan | None = None,
         if not keyfile.startswith("/") or ".." in Path(keyfile).parts:
             raise ValueError("unsafe initramfs keyfile path")
         path = _path(chroot, relative)
-        if not path.is_file():
-            raise ValueError("initramfs keyfile is missing")
+        if (not path.is_file() or path.stat().st_uid != 0 or
+                stat.S_IMODE(path.stat().st_mode) & 0o077):
+            raise ValueError("initramfs keyfile is missing or accessible by other users")
         early.append(keyfile)
-    _read(chroot, "etc/crypttab", required=True)
     lines = ["#!/bin/sh", "set -eu", 'PREREQ=""',
              'prereqs() { echo "$PREREQ"; }',
              'case "${1:-}" in prereqs) prereqs; exit 0;; esac',

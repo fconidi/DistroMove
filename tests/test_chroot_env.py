@@ -33,7 +33,26 @@ def root_tree(tmp_path):
     root = tmp_path / "root"
     for name in ("dev", "proc", "sys", "run", "boot/efi"):
         (root / name).mkdir(parents=True, exist_ok=True)
+    (root / "etc").mkdir()
+    (root / "etc/fstab").write_text("UUID=new-root / ext4 defaults 0 1\n")
     return root
+
+
+def test_separate_boot_must_be_mounted(tmp_path):
+    root = root_tree(tmp_path)
+    (root / "etc/fstab").write_text("UUID=new-root / ext4 defaults 0 1\n"
+                                      "UUID=new-boot /boot ext4 defaults 0 2\n")
+
+    class MissingBoot(Recorder):
+        def run(self, argv, **kwargs):
+            if argv[0] == "findmnt" and argv[argv.index("--mountpoint") + 1] == str(root / "boot"):
+                return subprocess.CompletedProcess(argv, 0, '{"filesystems":[]}', "")
+            return super().run(argv, **kwargs)
+
+    j = Journal(tmp_path / "journal", host_root_uuid="host")
+    with pytest.raises(ValueError, match="mount"):
+        with Chroot(MissingBoot(root), root, None, j):
+            pass
 
 
 def test_commands_run_in_separate_mount_namespace(tmp_path):

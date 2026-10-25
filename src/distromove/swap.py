@@ -29,6 +29,7 @@ class SwapPlan:
     swap_uuid: str | None = None
     containing_volume_id: str | None = None
     relative_path: str | None = None
+    source_containing_uuid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class SwapResult:
     luks_uuid: str | None
     random_key: bool = False
     source_resume: bool = False
+    source_containing_uuid: str | None = None
 
 
 def _mount_uuid(r: Runner, mount: SwapMount) -> None:
@@ -130,6 +132,8 @@ def make_swaps(r: Runner, plans: list[SwapPlan], mounts: dict[str, SwapMount],
             if source.luks and (not crypto or source.volume_id not in crypto.per_volume
                                 or not part.luks_uuid or source.random_key):
                 raise ValueError("encrypted swap has no approved crypto plan")
+            if source.random_key and part.luks_uuid:
+                raise ValueError("random-key swap must use a plain partition")
             if not source.luks and part.luks_uuid and not source.random_key:
                 raise ValueError("unexpected encrypted swap partition")
             prepared.append((plan, part.path, None))
@@ -192,7 +196,7 @@ def make_swaps(r: Runner, plans: list[SwapPlan], mounts: dict[str, SwapMount],
             journal.done(op, "created", path=target, offset=offset)
             results.append(SwapResult(source.volume_id, source.kind, source.path, source.uuid,
                                       target, plan.swap_uuid, mount.fs_uuid, offset, None,
-                                      False, source.resume))
+                                      False, source.resume, plan.source_containing_uuid))
     return results
 
 
@@ -209,6 +213,9 @@ def resume_target(swaps: list[SwapResult], original_resume: str | None) -> Resum
         old_uuid = original_resume[5:]
         matches = [swap for swap in swaps if
                    (swap.source_uuid and swap.source_uuid.casefold() == old_uuid.casefold())
+                   or (swap.kind == "file" and swap.source_resume and
+                       swap.source_containing_uuid and
+                       swap.source_containing_uuid.casefold() == old_uuid.casefold())
                    or (swap.kind == "partition" and swap.uuid and
                        swap.uuid.casefold() == old_uuid.casefold())
                    or (swap.kind == "file" and swap.source_resume and
