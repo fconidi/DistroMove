@@ -42,9 +42,16 @@ def _relative(value: str) -> str:
 
 
 def verify_copy(reference: Manifest, dst: Path,
-                expected_diffs: set[str]) -> list[Finding]:
+                expected_diffs: set[str], *, exclude_paths: tuple[str, ...] = (),
+                exclude_names: tuple[str, ...] = (),
+                expected_trees: tuple[str, ...] = ()) -> list[Finding]:
     """Compare the destination only with a stable, already captured reference."""
     ignored = {_relative(value) for value in expected_diffs}
+    trees = tuple(_relative(value) for value in expected_trees)
+    ignored.update(trees)
+    excluded = tuple(_relative(value) for value in exclude_paths)
+    if any("/" in name or name in {"", ".", ".."} for name in exclude_names):
+        raise ValueError("invalid excluded entry name")
     if not reference.entries:
         return [_error("copy", "reference manifest is empty")]
     for path in reference.entries:
@@ -52,11 +59,13 @@ def verify_copy(reference: Manifest, dst: Path,
     if not Path(dst).is_dir() or Path(dst).is_symlink():
         return [_error("copy", "destination tree is unavailable")]
     hashed = tuple(path for path, entry in reference.entries.items()
-                   if entry.sha256 is not None and path not in ignored)
-    actual = build_manifest(dst, hash_paths=hashed, sample=0, kind=reference.kind)
+                   if entry.sha256 is not None and path not in ignored
+                   and not any(path.startswith(tree + "/") for tree in trees))
+    actual = build_manifest(dst, hash_paths=hashed, sample=0, kind=reference.kind,
+                            exclude_paths=excluded, exclude_names=exclude_names)
     findings = []
     for path in sorted(set(reference.entries) | set(actual.entries)):
-        if path in ignored:
+        if path in ignored or any(path.startswith(tree + "/") for tree in trees):
             continue
         old, new = reference.entries.get(path), actual.entries.get(path)
         if old is None or new is None:

@@ -54,6 +54,26 @@ def test_expected_diffs_not_copy_errors(tmp_path):
     assert verify_copy(reference, dst, {"etc/fstab"}) == []
 
 
+def test_child_mount_excluded_on_both_sides(tmp_path):
+    src, dst = tree(tmp_path)
+    (src / "boot/efi").mkdir()
+    (dst / "boot/efi").mkdir()
+    reference = build_manifest(src, sample=0, exclude_paths=("boot/efi",))
+    (dst / "boot/efi/loader.efi").write_bytes(b"EFI")
+    assert verify_copy(reference, dst, set(), exclude_paths=("boot/efi",)) == []
+    assert errors(verify_copy(reference, dst, set()))
+
+
+def test_declared_generated_tree_does_not_hide_other_copy_errors(tmp_path):
+    src, dst = tree(tmp_path)
+    reference = build_manifest(src, sample=0)
+    (dst / "boot/grub").mkdir()
+    (dst / "boot/grub/grub.cfg").write_text("generated")
+    assert verify_copy(reference, dst, set(), expected_trees=("boot/grub",)) == []
+    (dst / "etc/fstab").write_text("corrupt")
+    assert errors(verify_copy(reference, dst, set(), expected_trees=("boot/grub",)))
+
+
 def test_expected_added_file_allows_parent_mtime_change(tmp_path):
     src, dst = tree(tmp_path)
     reference = build_manifest(src, sample=0)
