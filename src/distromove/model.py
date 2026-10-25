@@ -194,6 +194,8 @@ class CreatedPartition:
     partuuid: str
     start_sectors: int
     size_sectors: int
+    luks_uuid: str | None
+    fs_uuid: str
 
 
 @dataclass(frozen=True)

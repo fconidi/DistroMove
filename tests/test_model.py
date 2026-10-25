@@ -29,7 +29,8 @@ INTERFACE = {
                        "start_sectors", "size_sectors", "luks_uuid", "fs_uuid"),
     "UuidMap": ("fs", "luks", "partuuid", "mapper", "subvolid", "swap_uuid"),
     "PlannedIdentity": ("partuuid", "luks_uuid", "fs_uuid"),
-    "CreatedPartition": ("volume_id", "path", "partuuid", "start_sectors", "size_sectors"),
+    "CreatedPartition": ("volume_id", "path", "partuuid", "start_sectors", "size_sectors",
+                         "luks_uuid", "fs_uuid"),
     "SystemSnapshot": ("fstab", "crypttab", "mounts", "mappers", "swaps", "esp_contents",
                        "boot_current", "boot_entries", "identities", "running_root_uuid"),
     "ManifestEntry": ("size", "mtime", "mode", "uid", "gid", "sha256"),
@@ -86,3 +87,9 @@ def test_nested_construction_and_equality():
     planned = model.PlannedIdentity("pu", None, "fu")
     assert dataclasses.replace(planned, luks_uuid="lu").luks_uuid == "lu"
     assert planned.luks_uuid is None
+
+
+def test_created_partition_carries_preassigned_identifiers():
+    created = model.CreatedPartition("root", "/dev/vdb2", "part-new", 2048, 4096,
+                                     "luks-new", "fs-new")
+    assert (created.luks_uuid, created.fs_uuid) == ("luks-new", "fs-new")
