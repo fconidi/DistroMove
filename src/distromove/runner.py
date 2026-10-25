@@ -63,7 +63,9 @@ class Runner:
         if secret_input and input:
             secret = input.decode("utf-8", errors="replace")
         try:
-            proc = subprocess.run(argv, input=input, cwd=cwd, capture_output=True, check=False)
+            proc = subprocess.run(
+                argv, input=input, cwd=cwd, capture_output=True, check=False,
+                stdin=subprocess.DEVNULL if input is None else None)
         except OSError as exc:
             raise RunnerError(_scrub(f"cannot run {shlex.join(argv)}: {exc.strerror or exc}", secret),
                               argv) from None

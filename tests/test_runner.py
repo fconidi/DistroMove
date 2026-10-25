@@ -66,3 +66,24 @@ def test_check_raises_on_nonzero():
 def test_cwd_is_honoured(tmp_path):
     res = Runner().run(["pwd"], cwd=str(tmp_path))
     assert res.stdout.strip() == str(tmp_path)
+
+
+def test_no_input_means_stdin_is_devnull_not_inherited():
+    import subprocess
+
+    code = (
+        "from distromove.runner import Runner\n"
+        "r = Runner().run(['cat'])\n"
+        "assert r.returncode == 0 and r.stdout == ''\n"
+    )
+    src = str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src")
+    # The child's stdin is an open pipe that never closes: it must not be inherited.
+    child = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE,
+                             env={"PYTHONPATH": src, "PYTHONDONTWRITEBYTECODE": "1"})
+    try:
+        assert child.wait(timeout=10) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        child.stdin.close()
