@@ -1,8 +1,10 @@
 """Read-only probing of the running system: what to migrate, and one picture for the guards.
 
 Every external command goes through ``Runner.run(..., readonly=True)``. Files (fstab,
-crypttab, os-release, the dpkg database, /sys, /dev/disk/by-id, the ESP, /proc) are read
-below ``root`` so that the whole probe can run against a prepared directory tree.
+crypttab, os-release, the dpkg database, the initramfs resume setting, the kernel command
+line, /sys, /dev/disk/by-id, the ESP, /proc) are read below ``root`` so that the whole probe
+can run against a prepared directory tree. The parsers live in ``probe_parse`` and are
+re-exported here.
 """
 from __future__ import annotations
 
@@ -14,9 +16,22 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Literal
 
-from .model import (BtrfsInfo, Esp, Keyslot, LuksInfo, MountInfo, Partition, Source, Subvol,
-                    SwapRef, SystemSnapshot, Volume, VolumeIdentity)
+from .model import (BtrfsInfo, Esp, MountInfo, Partition, Source, Subvol, SwapRef,
+                    SystemSnapshot, Volume, VolumeIdentity)
+from .probe_parse import (CrypttabEntry, enrich_luks, installed_packages, is_syslinuxos,
+                          loader_of, parse_crypttab, parse_dm_table, parse_efibootmgr,
+                          parse_fstab, parse_lsblk, parse_luks_dump, parse_resume, parse_swapon,
+                          partition_from_row, same, subvol_name)
 from .runner import Runner, RunnerError
+
+__all__ = [
+    "SYSTEM_MOUNTPOINTS", "ESP_TYPE", "ESP_MOUNTPOINTS", "LSBLK", "FINDMNT", "SWAPON",
+    "Unsupported", "CrypttabEntry", "check_tools", "discover_source", "collect_snapshot",
+    "classify_keys", "database_activity", "enrich_luks", "installed_packages", "is_syslinuxos",
+    "loader_of", "parse_crypttab", "parse_dm_table", "parse_efibootmgr", "parse_fstab",
+    "parse_lsblk", "parse_luks_dump", "parse_resume", "parse_swapon", "partition_from_row",
+    "same", "subvol_name",
+]
 
 SYSTEM_MOUNTPOINTS = {"/": "root", "/boot": "boot", "/usr": "usr", "/var": "var",
                       "/home": "home", "/opt": "opt", "/srv": "srv"}
@@ -26,7 +41,6 @@ ESP_MOUNTPOINTS = ("/boot/efi", "/efi")
 _RANDOM_KEYS = {"/dev/urandom", "/dev/random", "/dev/hw_random"}
 _NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "9p", "virtiofs"}
 _BY_ID_ORDER = ("wwn-", "nvme-eui.", "nvme-nvme.", "ata-", "nvme-", "scsi-", "usb-", "mmc-")
-_GRUB_LOADERS = ("shimx64.efi", "grubx64.efi", "bootx64.efi")
 _SB_VAR = "sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
 LSBLK = ["lsblk", "--json", "--list", "--bytes", "--output",
@@ -56,14 +70,6 @@ class Unsupported(Exception):
         self.reason = reason
 
 
-@dataclass(frozen=True)
-class CrypttabEntry:
-    name: str
-    device: str
-    keyfile: str | None            # None when the volume is unlocked with a passphrase
-    options: str
-
-
 # --------------------------------------------------------------------------- small helpers
 
 def _out(r: Runner, argv: list[str]) -> str:
@@ -77,20 +83,22 @@ def _read(root: Path, rel: str) -> str | None:
         return None
 
 
-def _same(a: str | None, b: str | None) -> bool:
-    return bool(a) and bool(b) and a.strip().lower() == b.strip().lower()
+def _listdir(directory: Path) -> list[str]:
+    try:
+        return os.listdir(directory)
+    except OSError:
+        return []
 
 
 def _within(path: str, directory: str) -> bool:
     return directory == "/" or path == directory or path.startswith(directory.rstrip("/") + "/")
 
 
-def _ci_child(directory: Path, name: str) -> Path | None:
+def _ci_child(directory: Path | None, name: str | None) -> Path | None:
     """The entry of ``directory`` called ``name``, ignoring case (FAT keeps any case)."""
-    try:
-        names = os.listdir(directory)
-    except OSError:
+    if directory is None or not name:
         return None
+    names = _listdir(directory)
     hit = next((n for n in names if n == name), None) or next(
         (n for n in names if n.lower() == name.lower()), None)
     return directory / hit if hit else None
@@ -100,209 +108,26 @@ def _volume_id(role: str, part: Partition) -> str:
     return f"{role}-{(part.partuuid or part.name).split('-')[0].lower()}"
 
 
+def _unique_ids(ids: list[str], used: set[str]) -> list[str]:
+    out = []
+    for base in ids:
+        vid, n = base, 2
+        while vid in used:
+            vid, n = f"{base}-{n}", n + 1
+        used.add(vid)
+        out.append(vid)
+    return out
+
+
+def _unique(items: list, used: set[str]) -> list:
+    ids = _unique_ids([it.volume_id for it in items], used)
+    return [replace(it, volume_id=vid) if vid != it.volume_id else it
+            for it, vid in zip(items, ids)]
+
+
 def _mountinfo(m: dict) -> MountInfo:
     return MountInfo(source=m.get("source") or "", target=m.get("target") or "",
                      fstype=m.get("fstype") or "", options=m.get("options") or "")
-
-
-# --------------------------------------------------------------------------- parsers
-
-def _part_number(name: str, parent: str | None) -> int:
-    rest = name[len(parent):] if parent and name.startswith(parent) else name
-    m = re.search(r"(\d+)$", rest)  # sda10 -> 10, nvme0n1p2 -> p2 -> 2, mmcblk0p1 -> 1
-    if not m:
-        raise ValueError(f"cannot tell the partition number of {name}")
-    return int(m.group(1))
-
-
-def _partition(row: dict, disk: dict, by_id: dict[str, str]) -> Partition:
-    log = int(disk.get("log-sec") or row.get("log-sec") or 512)
-    size = int(row.get("size") or 0)
-    parent = row.get("pkname")
-    return Partition(
-        path=row["path"], name=row["kname"], parent_disk=disk.get("path") or f"/dev/{parent}",
-        number=_part_number(row["kname"], parent), size_bytes=size, fstype=row.get("fstype"),
-        uuid=row.get("uuid"), partuuid=row.get("partuuid") or "", parttype=row.get("parttype"),
-        mountpoint=row.get("mountpoint"), disk_wwn=disk.get("wwn"),
-        disk_serial=disk.get("serial"), disk_by_id=by_id.get(parent or ""),
-        start_sectors=int(row.get("start") or 0) * 512 // log,  # lsblk START is in 512-byte units
-        size_sectors=size // log, logical_sector=log)
-
-
-def parse_lsblk(text: str, by_id: dict[str, str] | None = None) -> list[Partition]:
-    """Partitions in the output of ``LSBLK``; ``by_id`` maps a disk name to its by-id link."""
-    rows = json.loads(text).get("blockdevices") or []
-    others = {r["kname"]: r for r in rows if r.get("type") != "part"}
-    return [_partition(r, others.get(r.get("pkname")) or {}, by_id or {})
-            for r in rows if r.get("type") == "part"]
-
-
-def _unoctal(s: str) -> str:
-    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
-
-
-def parse_fstab(text: str) -> list[MountInfo]:
-    out = []
-    for line in text.splitlines():
-        f = line.split()
-        if len(f) < 3 or f[0].startswith("#"):
-            continue
-        out.append(MountInfo(source=_unoctal(f[0]), target=_unoctal(f[1]), fstype=f[2],
-                             options=f[3] if len(f) > 3 else "defaults"))
-    return out
-
-
-def parse_crypttab(text: str) -> list[CrypttabEntry]:
-    out = []
-    for line in text.splitlines():
-        f = line.split()
-        if len(f) < 2 or f[0].startswith("#"):
-            continue
-        key = f[2] if len(f) > 2 and f[2] not in ("none", "-") else None
-        out.append(CrypttabEntry(name=f[0], device=f[1], keyfile=key,
-                                 options=f[3] if len(f) > 3 else ""))
-    return out
-
-
-def _field(text: str, name: str) -> str | None:
-    m = re.search(rf"^{re.escape(name)}:\s*(.*?)\s*$", text, re.M)
-    return m.group(1) if m else None
-
-
-def _luks2_sections(text: str) -> dict[str, list[dict[str, str]]]:
-    """``Section:`` headers -> items (``  N: type``) with their tab-indented fields."""
-    sections: dict[str, list[dict[str, str]]] = {}
-    current, item = None, None
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        if not line[0].isspace():
-            name, _, rest = line.partition(":")
-            current = name.strip() if not rest.strip() else None
-            if current:
-                sections[current] = []
-            item = None
-            continue
-        if current is None:
-            continue
-        m = re.match(r"^ +(\d+): (\S+)", line)
-        if m:
-            item = {"index": m.group(1), "type": m.group(2)}
-            sections[current].append(item)
-        elif item is not None and ":" in line:
-            k, _, v = line.strip().partition(":")
-            item.setdefault(k.strip(), v.strip())
-    return sections
-
-
-def parse_luks_dump(text: str) -> LuksInfo:
-    """The output of ``cryptsetup luksDump`` (LUKS1 or LUKS2)."""
-    version = int(_field(text, "Version") or 0)
-    uuid = _field(text, "UUID") or ""
-    if version == 1:
-        cipher = f"{_field(text, 'Cipher name')}-{_field(text, 'Cipher mode')}"
-        bits = int(_field(text, "MK bits") or 0)
-        slots = [Keyslot(int(m.group(1)), "pbkdf2", f"{cipher} {bits} bits")
-                 for m in re.finditer(r"^Key Slot (\d+): ENABLED", text, re.M)]
-        return LuksInfo(1, cipher, bits, 512, slots, uuid, None)
-    if version != 2:
-        raise ValueError("not a LUKS header dump")
-    sections = _luks2_sections(text)
-    segment = next((s for s in sections.get("Data segments", []) if s["type"] == "crypt"), {})
-    slots = [s for s in sections.get("Keyslots", []) if s["type"] == "luks2"]
-    keys = [Keyslot(int(s["index"]), s.get("PBKDF", ""),
-                    f"{s.get('Cipher', '')} {s.get('Cipher key', '')}") for s in slots]
-    bits = int(slots[0].get("Key", "0").split()[0]) if slots else 0
-    sector = int((segment.get("sector") or "512").split()[0])
-    return LuksInfo(2, segment.get("cipher", ""), bits, sector, keys, uuid, None)
-
-
-def _dm_table(text: str) -> list[tuple[str, str | None]]:
-    out = []
-    for line in text.splitlines():
-        f = line.split()
-        if f and line.strip() != "No devices found":
-            out.append((f[0], f[1] if len(f) > 1 else None))
-    return out
-
-
-def _refers_to(spec: str, uuid: str) -> bool:
-    s = spec.strip().strip('"')
-    for prefix in ("UUID=", "/dev/disk/by-uuid/"):
-        if s.startswith(prefix):
-            return _same(s[len(prefix):].strip('"'), uuid)
-    return False
-
-
-def enrich_luks(info: LuksInfo, crypttab: str | list[CrypttabEntry], dmsetup_text: str) -> LuksInfo:
-    """Add the open mapping (from ``"<name> <dm-uuid>"`` lines) and the crypttab key file."""
-    entries = parse_crypttab(crypttab) if isinstance(crypttab, str) else list(crypttab)
-    hexid = info.luks_uuid.replace("-", "").lower()
-    mapper = info.mapper_name
-    for name, dmuuid in _dm_table(dmsetup_text):
-        m = re.fullmatch(r"CRYPT-LUKS[12]-([0-9a-fA-F]+)-(.+)", dmuuid or "")
-        if m and m.group(1).lower() == hexid:
-            mapper = name
-            break
-    entry = next((e for e in entries if mapper and e.name == mapper), None) or next(
-        (e for e in entries if _refers_to(e.device, info.luks_uuid)), None)
-    return replace(info, mapper_name=mapper, keyfile=entry.keyfile if entry else info.keyfile)
-
-
-def _installed(dpkg_status: str) -> set[str]:
-    out = set()
-    for para in re.split(r"\n\s*\n", dpkg_status):
-        pkg = re.search(r"^Package:\s*(\S+)", para, re.M)
-        st = re.search(r"^Status:\s*(.+?)\s*$", para, re.M)
-        if pkg and st and st.group(1).split()[-1] == "installed":
-            out.add(pkg.group(1))
-    return out
-
-
-def _subvol_name(path: str) -> str:
-    path = path.strip()
-    if path.startswith("<FS_TREE>/"):
-        path = path[len("<FS_TREE>/"):]
-    return path.strip("/")
-
-
-def is_syslinuxos(dpkg_status: str, subvol_paths: Iterable[str]) -> bool:
-    """SysLinuxOS: ``syslinuxos-snapshots`` installed and subvolumes ``@`` and ``@home``."""
-    paths = {_subvol_name(p) for p in subvol_paths}
-    return "syslinuxos-snapshots" in _installed(dpkg_status) and {"@", "@home"} <= paths
-
-
-def parse_efibootmgr(text: str) -> tuple[str | None, dict[str, str]]:
-    """``BootCurrent`` and the entry lines of ``efibootmgr -v`` (without ``dp:``/``data:``)."""
-    current, entries = None, {}
-    for line in text.splitlines():
-        m = re.match(r"BootCurrent:\s*([0-9A-Fa-f]{4})\s*$", line)
-        if m:
-            current = m.group(1).upper()
-            continue
-        m = re.match(r"Boot([0-9A-Fa-f]{4})\*?\s", line)
-        if m:
-            entries[m.group(1).upper()] = line.strip()
-    return current, entries
-
-
-_HD = re.compile(r"HD\(\d+,GPT,(?P<uuid>[0-9A-Fa-f-]{36}),[^)]*\)/"
-                 r"(?:File\((?P<file>[^)]*)\)|(?P<path>\\[^\s)]+))")
-
-
-def _loader_of(line: str | None) -> tuple[str, str] | None:
-    m = _HD.search(line or "")
-    return (m.group("uuid"), m.group("file") or m.group("path")) if m else None
-
-
-def _parse_swapon(text: str) -> list[tuple[str, str, int, str | None]]:
-    out = []
-    for line in text.splitlines():
-        f = line.split()
-        if len(f) >= 3:
-            name = re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), f[0])
-            out.append((name, f[1], int(f[2]), f[3] if len(f) > 3 else None))
-    return out
 
 
 # --------------------------------------------------------------------------- tools
@@ -345,11 +170,7 @@ def _disk_links(root: Path) -> dict[str, str]:
     """Disk kernel name -> preferred /dev/disk/by-id link (WWN first)."""
     base = root / "dev/disk/by-id"
     best: dict[str, tuple[tuple, str]] = {}
-    try:
-        names = sorted(os.listdir(base))
-    except OSError:
-        return {}
-    for n in names:
+    for n in sorted(_listdir(base)):
         if re.search(r"-part\d+$", n):
             continue
         try:
@@ -367,11 +188,7 @@ def _dm_text(root: Path) -> str:
     """Device-mapper devices as ``"<name> <dm-uuid>"`` lines (name alone without a UUID)."""
     lines = []
     base = root / "sys/block"
-    try:
-        names = os.listdir(base)
-    except OSError:
-        names = []
-    for k in names:
+    for k in _listdir(base):
         if not k.startswith("dm-"):
             continue
         name = (_read(base, f"{k}/dm/name") or "").strip()
@@ -392,12 +209,12 @@ def _gather(r: Runner, root: Path) -> _Live:
             parents[k].append(row["pkname"])
         by_path[row["path"]] = by_path[f"/dev/{k}"] = k
     by_id = _disk_links(root)
-    parts = {k: _partition(row, rows.get(row.get("pkname")) or {}, by_id)
+    parts = {k: partition_from_row(row, rows.get(row.get("pkname")) or {}, by_id)
              for k, row in rows.items() if row.get("type") == "part"}
     return _Live(rows=rows, parents=parents, by_path=by_path, parts=parts,
                  mounts=json.loads(_out(r, FINDMNT)).get("filesystems") or [],
                  crypttab=parse_crypttab(_read(root, "etc/crypttab") or ""),
-                 dm_text=_dm_text(root), swaps=_parse_swapon(_out(r, SWAPON)))
+                 dm_text=_dm_text(root), swaps=parse_swapon(_out(r, SWAPON)))
 
 
 def _chain(live: _Live, source: str) -> list[dict]:
@@ -433,18 +250,30 @@ def _check_chain(chain: list[dict], what: str) -> None:
 
 
 def _volume_groups(live: _Live, extra: set[str], strict: bool) -> dict[str, tuple[str, str]]:
-    """Partition kernel name -> (role, mountpoint) of every volume to migrate."""
+    """Partition kernel name -> (role, mountpoint) of every volume to migrate.
+
+    In ``strict`` mode a system mountpoint that is not a block device is refused, so that
+    nothing is left out without a word: an automount not triggered yet, ZFS, overlay and
+    the like. A network filesystem stays where it is and is listed as not migrated.
+    """
     found: dict[str, tuple[str, str]] = {}
+    mounted = {m.get("target") for m in live.mounts if m.get("fstype") != "autofs"}
     for m in live.mounts:
-        target, source = m.get("target") or "", m.get("source") or ""
+        target, source, fstype = m.get("target") or "", m.get("source") or "", m.get("fstype") or ""
         role = SYSTEM_MOUNTPOINTS.get(target) or ("extra" if target in extra else None)
         if role is None:
             continue
         if not source.startswith("/dev/"):
-            if strict and (role == "extra" or target == "/"):
-                raise Unsupported(f"{target} is not on a disk partition")
-            continue
-        if m.get("fstype") != "btrfs" and (m.get("fsroot") or "/") != "/":
+            if not strict or (fstype == "autofs" and target in mounted):
+                continue  # the automount point of a filesystem that is mounted
+            if fstype == "autofs":
+                raise Unsupported(f"{target} is an automount that is not mounted yet; "
+                                  "mount/trigger it first")
+            if fstype in _NETWORK_FS and role != "extra" and target != "/":
+                continue
+            raise Unsupported(f"{target} is on {fstype or 'an unknown filesystem'} ({source}), "
+                              "which is not supported")
+        if fstype != "btrfs" and (m.get("fsroot") or "/") != "/":
             continue  # a bind mount of a directory, not a filesystem of its own
         chain = _chain(live, source)
         part = _partition_of(live, source)
@@ -457,10 +286,16 @@ def _volume_groups(live: _Live, extra: set[str], strict: bool) -> dict[str, tupl
         cur = found.get(part.name)
         if cur is None or _ROLE_ORDER.index(role) < _ROLE_ORDER.index(cur[0]):
             found[part.name] = (role, target)
-    missing = sorted(extra - {m.get("target") for m in live.mounts})
+    missing = sorted(extra - mounted)
     if strict and missing:
         raise Unsupported(f"{missing[0]} is not mounted")
     return found
+
+
+def _ordered(groups: dict[str, tuple[str, str]]) -> list[tuple[str, str, str]]:
+    """(kernel name, role, mountpoint) in the order of ``Source.volumes``."""
+    return sorted(((k, role, mp) for k, (role, mp) in groups.items()),
+                  key=lambda x: (_ROLE_ORDER.index(x[1]), x[2]))
 
 
 def _holding_mount(live: _Live, path: str) -> dict | None:
@@ -513,11 +348,55 @@ def _swap_refs(r: Runner, live: _Live, groups: dict[str, tuple[str, str]],
     return refs
 
 
+def _resume_names(live: _Live, swap: SwapRef) -> set[str]:
+    """Every way ``RESUME=``/``resume=`` can name this swap (its device, for a swap file)."""
+    if swap.kind == "file":
+        m = _holding_mount(live, swap.path) or {}
+        source = m.get("source") or ""
+        chain, part = _chain(live, source), _partition_of(live, source)
+        uuids, partuuids = [chain[0].get("uuid") if chain else None], []
+        devices = [source] + [c.get("path") for c in chain]
+    else:
+        part = _partition_of(live, swap.path)
+        uuids, partuuids = [swap.uuid], [part.partuuid if part else None]
+        devices = [swap.path] + [c.get("path") for c in _chain(live, swap.path)]
+        if swap.luks is not None and swap.luks.mapper_name:
+            devices.append(f"/dev/mapper/{swap.luks.mapper_name}")
+    names = {d for d in devices if d}
+    names |= {f"UUID={u}" for u in uuids if u} | {f"/dev/disk/by-uuid/{u}" for u in uuids if u}
+    names |= {f"PARTUUID={p}" for p in partuuids if p}
+    names |= {f"/dev/disk/by-partuuid/{p}" for p in partuuids if p}
+    return {n.lower() for n in names}
+
+
+def _mark_resume(root: Path, live: _Live, swaps: list[SwapRef]) -> list[SwapRef]:
+    """Mark the swaps the initramfs resumes from: ``resume=`` of the kernel command line and
+    initramfs-tools ``RESUME``; unset, ``auto`` or naming no swap means what initramfs-tools
+    picks then, the largest swap partition without a random key."""
+    cmdline, conf = parse_resume(_read(root, "etc/initramfs-tools/conf.d/resume") or "",
+                                 _read(root, "proc/cmdline") or "")
+
+    def named(spec: str | None) -> set[int]:
+        if not spec or spec in ("none", "auto"):
+            return set()
+        spec = spec.strip().strip('"').lower()
+        return {i for i, s in enumerate(swaps) if spec in _resume_names(live, s)}
+
+    hits = named(cmdline) | named(conf)
+    if conf != "none" and not named(conf):
+        lasting = [(s.size_bytes, i) for i, s in enumerate(swaps)
+                   if s.kind == "partition" and not s.random_key]
+        if lasting:
+            hits.add(max(lasting)[1])
+    return [replace(s, resume=True) if i in hits and not s.random_key else s
+            for i, s in enumerate(swaps)]
+
+
 # --------------------------------------------------------------------------- btrfs
 
 def _subvol_of(m: dict) -> str:
     opt = re.search(r"(?:^|,)subvol=([^,]*)", m.get("options") or "")
-    return _subvol_name(opt.group(1) if opt else (m.get("fsroot") or "/"))
+    return subvol_name(opt.group(1) if opt else (m.get("fsroot") or "/"))
 
 
 def _reach(path: str, mounted: list[tuple[str, dict]]) -> str | None:
@@ -549,7 +428,7 @@ def _btrfs(r: Runner, root: Path, mp: str, mounts: list[dict],
         raise Unsupported(f"the btrfs filesystem of {mp} spans {n} devices; only one is supported")
     fs_uuid = m.group(1) if (m := re.search(r"uuid:\s*([0-9A-Fa-f-]{36})", show)) else ""
     listing = _out(r, ["btrfs", "subvolume", "list", mp])
-    listed = [(int(m.group(1)), _subvol_name(m.group(2))) for m in re.finditer(
+    listed = [(int(m.group(1)), subvol_name(m.group(2))) for m in re.finditer(
         r"^ID (\d+) gen \d+ top level \d+ path (.+?)\s*$", listing, re.M)]
     default_m = re.match(r"\s*ID (\d+)", _out(r, ["btrfs", "subvolume", "get-default", mp]))
     mounted = [(_subvol_of(m), m) for m in mounts]
@@ -567,10 +446,7 @@ def _btrfs(r: Runner, root: Path, mp: str, mounts: list[dict],
         swap = holder.get(path)
         only = False
         if swap is not None and os.path.dirname(swap) == where:
-            try:
-                only = os.listdir(root / where.lstrip("/")) == [os.path.basename(swap)]
-            except OSError:
-                only = False
+            only = _listdir(root / where.lstrip("/")) == [os.path.basename(swap)]
         properties: dict[str, str] = {}
         if where and not _is_snapshot(path):
             for kind in ("subvol", "inode"):
@@ -622,11 +498,11 @@ def _spec_is(spec: str, part: Partition) -> bool:
     s = spec.strip().strip('"')
     key, sep, val = s.partition("=")
     if sep and key in ("UUID", "PARTUUID"):
-        return _same(val.strip('"'), part.uuid if key == "UUID" else part.partuuid)
+        return same(val.strip('"'), part.uuid if key == "UUID" else part.partuuid)
     for prefix, value in (("/dev/disk/by-uuid/", part.uuid),
                           ("/dev/disk/by-partuuid/", part.partuuid)):
         if s.startswith(prefix):
-            return _same(s[len(prefix):], value)
+            return same(s[len(prefix):], value)
     return s == part.path
 
 
@@ -644,6 +520,42 @@ def _choose_esp(live: _Live, fstab: list[MountInfo]) -> tuple[Partition, str]:
         raise Unsupported("cannot tell which EFI system partition the system uses "
                           "(it must be mounted on /boot/efi or /efi)")
     return picks[0]
+
+
+def _own_loader(root: Path, esp: Partition, esp_mp: str, current: str | None,
+                entries: dict[str, str], packages: set[str]) -> tuple[str, bool]:
+    """(loader folder of this system under EFI/, started through shim). Fails closed.
+
+    GRUB is accepted on evidence only: the entry the firmware booted is
+    ``EFI/<id>/grubx64.efi`` or ``shimx64.efi`` on this ESP; or, when it booted another way
+    (no BootCurrent, a firmware device entry, the removable path ``EFI/BOOT``, another ESP),
+    GRUB for UEFI is installed, exactly one ``EFI/<id>/grubx64.efi`` is on this ESP and
+    nothing of systemd-boot or of a unified kernel image is there.
+    """
+    booted = loader_of(entries.get(current or ""))
+    if booted and same(booted[0], esp.partuuid):
+        pieces = booted[1].split("\\")  # "\EFI\debian\shimx64.efi" -> "", EFI, debian, file
+        fallback = len(pieces) >= 3 and pieces[1].upper() == "EFI" and pieces[2].upper() == "BOOT"
+        if (len(pieces) == 4 and pieces[1].upper() == "EFI" and not fallback
+                and pieces[3].lower() in ("grubx64.efi", "shimx64.efi")):
+            return pieces[2], pieces[3].lower() == "shimx64.efi"
+        if not fallback:
+            raise Unsupported(f"the system was not started by GRUB ({booted[1]}); "
+                              "only GRUB is supported")
+    base = root / esp_mp.lstrip("/")
+    efi = _ci_child(base, "EFI")
+    linux = _ci_child(efi, "Linux")
+    ukis = [n for n in _listdir(linux) if n.lower().endswith(".efi")] if linux else []
+    if _ci_child(efi, "systemd") or ukis or _ci_child(_ci_child(base, "loader"), "loader.conf"):
+        raise Unsupported("systemd-boot or a unified kernel image is on the EFI system partition; "
+                          "only GRUB is supported")
+    if not any(p.startswith("grub-efi-amd64") for p in packages):
+        raise Unsupported("GRUB for UEFI (grub-efi-amd64) is not installed")
+    grubs = [d for d in _efi_dirs(root, esp_mp)
+             if d.upper() != "BOOT" and _ci_child(efi / d, "grubx64.efi")]
+    if len(grubs) != 1:
+        raise Unsupported("cannot tell which GRUB on the EFI system partition started the system")
+    return grubs[0], False
 
 
 def _secure_boot(r: Runner, root: Path) -> bool:
@@ -672,7 +584,7 @@ def _check_platform(r: Runner, root: Path) -> str:
     dpkg = _read(root, "var/lib/dpkg/status")
     if dpkg is None:
         raise Unsupported("not a Debian-based system (no dpkg database)")
-    pkgs = _installed(dpkg)
+    pkgs = installed_packages(dpkg)
     if pkgs & {"dracut", "dracut-core"}:
         raise Unsupported("dracut is not supported; initramfs-tools is needed")
     if "initramfs-tools" not in pkgs:
@@ -686,32 +598,20 @@ def _os_id(root: Path) -> str:
     return m.group(2) if m else "linux"
 
 
-def _unique(items: list, used: set[str]) -> list:
-    out = []
-    for it in items:
-        vid, n = it.volume_id, 2
-        while vid in used:
-            vid, n = f"{it.volume_id}-{n}", n + 1
-        used.add(vid)
-        out.append(replace(it, volume_id=vid) if vid != it.volume_id else it)
-    return out
-
-
 def discover_source(r: Runner, root: Path = Path("/"), *,
                     extra_mounts: Iterable[str] = ()) -> Source:
     """The running system to migrate; ``extra_mounts`` are mountpoints the user includes."""
     root = Path(root)
     dpkg = _check_platform(r, root)
+    packages = installed_packages(dpkg)
     check_tools(r)
     live = _gather(r, root)
     groups = _volume_groups(live, set(extra_mounts), strict=True)
     if not any(mp == "/" for _, mp in groups.values()):
         raise Unsupported("the root filesystem was not found")
-    swaps = _swap_refs(r, live, groups, strict=True)
+    swaps = _mark_resume(root, live, _swap_refs(r, live, groups, strict=True))
     files = [s.path for s in swaps if s.kind == "file"]
-    volumes = sorted((_volume(r, live, root, k, role, mp, files)
-                      for k, (role, mp) in groups.items()),
-                     key=lambda v: (_ROLE_ORDER.index(v.role), v.mountpoint))
+    volumes = [_volume(r, live, root, k, role, mp, files) for k, role, mp in _ordered(groups)]
     root_vol = next(v for v in volumes if v.role == "root")
     holder = next((v for v in volumes if v.role == "boot"), root_vol)
     volumes = [replace(v, boot_inside_luks=True) if v is holder and v.luks else v for v in volumes]
@@ -720,29 +620,17 @@ def discover_source(r: Runner, root: Path = Path("/"), *,
 
     esp_part, esp_mp = _choose_esp(live, parse_fstab(_read(root, "etc/fstab") or ""))
     current, entries = parse_efibootmgr(_out(r, ["efibootmgr", "-v"]))
-    booted = _loader_of(entries.get(current or ""))
-    own, loader = None, None
-    if booted and _same(booted[0], esp_part.partuuid):
-        pieces = booted[1].split("\\")
-        loader = pieces[-1].lower()
-        if len(pieces) >= 4 and pieces[1].upper() == "EFI":
-            own = pieces[-2]
-    if loader and loader not in _GRUB_LOADERS:
-        raise Unsupported(f"the system was not started by GRUB ({booted[1]}); "
-                          "only GRUB is supported")
+    own, via_shim = _own_loader(root, esp_part, esp_mp, current, entries, packages)
     secure_boot = _secure_boot(r, root)
     if secure_boot:
-        efi = _ci_child(root / esp_mp.lstrip("/"), "EFI")
-        folder = _ci_child(efi, own) if efi and own else None
+        folder = _ci_child(_ci_child(root / esp_mp.lstrip("/"), "EFI"), own)
         signed = folder is not None and all(_ci_child(folder, f)
                                             for f in ("shimx64.efi", "grubx64.efi"))
-        if not (loader == "shimx64.efi" and signed
-                and {"shim-signed", "grub-efi-amd64-signed"} <= _installed(dpkg)):
+        if not (via_shim and signed and {"shim-signed", "grub-efi-amd64-signed"} <= packages):
             raise Unsupported("Secure Boot is on and the signed boot chain (shim and signed GRUB) "
                               "cannot be preserved")
     dirs = _efi_dirs(root, esp_mp)
-    foreign = [d for d in dirs if d.upper() != "BOOT" and not _same(d, own)]
-    esp = Esp(esp_part, esp_mp, dirs, foreign)
+    esp = Esp(esp_part, esp_mp, dirs, [d for d in dirs if d.upper() != "BOOT" and not same(d, own)])
 
     unmigrated = []
     for m in live.mounts:
@@ -762,14 +650,46 @@ def discover_source(r: Runner, root: Path = Path("/"), *,
 
 # --------------------------------------------------------------------------- snapshot
 
-def collect_snapshot(r: Runner, root: Path = Path("/")) -> SystemSnapshot:
-    """One coherent picture of the live system (see ``SystemSnapshot``)."""
+def _source_roles(live: _Live, source: Source | None) -> dict[str, tuple[str, str]]:
+    """Partition kernel name -> (volume_id, role) of the volumes and swaps of ``source``."""
+    out: dict[str, tuple[str, str]] = {}
+    if source is None:
+        return out
+    for p in live.parts.values():
+        v = next((v for v in source.volumes if same(v.partition.partuuid, p.partuuid)), None)
+        s = next((s for s in source.swaps if s.kind == "partition" and (
+            same(s.luks.luks_uuid if s.luks else s.uuid, p.uuid))), None)
+        if v is not None:
+            out[p.name] = (v.volume_id, v.role)
+        elif s is not None:
+            out[p.name] = (s.volume_id, "swap")
+    return out
+
+
+def collect_snapshot(r: Runner, root: Path = Path("/"),
+                     source: Source | None = None) -> SystemSnapshot:
+    """One coherent picture of the live system (see ``SystemSnapshot``).
+
+    With ``source`` (the migrated system), its volumes, including those the user included by
+    hand, keep their ``volume_id`` and role. Partitions that are neither a volume, a swap nor
+    an ESP have role ``foreign`` and no ``volume_id``.
+    """
     root = Path(root)
     live = _gather(r, root)
-    groups = _volume_groups(live, set(), strict=False)
-    swaps = _swap_refs(r, live, groups, strict=False)
+    extra = {v.mountpoint for v in source.volumes if v.role == "extra"} if source else set()
+    groups = _volume_groups(live, extra, strict=False)
+    swaps = _mark_resume(root, live, _swap_refs(r, live, groups, strict=False))
+    ordered = _ordered(groups)  # same ids, in the same order, as discover_source
+    used: set[str] = set()
+    ids = _unique_ids([_volume_id(role, live.parts[k]) for k, role, _ in ordered], used)
+    swaps = _unique(swaps, used)
+    roles = {k: (vid, role) for (k, role, _), vid in zip(ordered, ids)}
+    for s in swaps:
+        k = live.by_path.get(s.path) if s.kind == "partition" else None
+        if k is not None:
+            roles.setdefault(k, (s.volume_id, "swap"))
+    roles |= _source_roles(live, source)
     current, entries = parse_efibootmgr(_out(r, ["efibootmgr", "-v"]))
-    swap_parts = {s.path for s in swaps if s.kind == "partition"}
     esp_contents: dict[str, list[str]] = {}
     identities = []
     for p in live.parts.values():
@@ -777,15 +697,15 @@ def collect_snapshot(r: Runner, root: Path = Path("/")) -> SystemSnapshot:
         targets = [m["target"] for m in live.mounts if _mounted_on(live, m, p.name)]
         if is_esp and targets:
             esp_contents[p.partuuid] = _efi_dirs(root, targets[0])
-        role = (groups[p.name][0] if p.name in groups else "esp" if is_esp
-                else "swap" if p.path in swap_parts else "extra")
+        vid, role = roles.get(p.name) or (
+            (_volume_id("esp", p), "esp") if is_esp else ("", "foreign"))
         child = next((live.rows[k] for k, ps in live.parents.items()
                       if p.name in ps and live.rows[k].get("type") == "crypt"), None)
         luks_uuid = p.uuid if p.fstype == "crypto_LUKS" else None
         fs_uuid = (child.get("uuid") if child else None) if luks_uuid else p.uuid
-        identities.append(VolumeIdentity(
-            _volume_id(role, p) if role != "extra" else "", role, p.disk_wwn, p.disk_serial,
-            p.disk_by_id, p.partuuid, p.start_sectors, p.size_sectors, luks_uuid, fs_uuid))
+        identities.append(VolumeIdentity(vid, role, p.disk_wwn, p.disk_serial, p.disk_by_id,
+                                         p.partuuid, p.start_sectors, p.size_sectors, luks_uuid,
+                                         fs_uuid))
     root_mount = next((m for m in live.mounts if m.get("target") == "/"), {})
     root_chain = _chain(live, root_mount.get("source") or "")
     root_uuid = (root_chain[0].get("uuid") or "") if root_chain else ""
@@ -800,31 +720,29 @@ def collect_snapshot(r: Runner, root: Path = Path("/")) -> SystemSnapshot:
 # --------------------------------------------------------------------------- keys and databases
 
 def classify_keys(source: Source) -> dict[str, Literal["initramfs", "after-root"]]:
-    """volume_id -> where each key file is needed: in the initramfs (to unlock and mount the
-    root, which includes a separate /usr) or only after the root is mounted."""
+    """volume_id -> where each key file is needed.
+
+    In the initramfs: the root and a separate /usr, the resume device (or the volume holding
+    the resume swap file), and any container whose crypttab line has the ``initramfs``
+    option. Everything else only after the root is mounted.
+    """
+    early_roles = {"root", "usr"} | {s.containing_volume_role for s in source.swaps
+                                     if s.kind == "file" and s.resume}
     out: dict[str, Literal["initramfs", "after-root"]] = {}
-    for v in source.volumes:
-        if v.luks is not None and v.luks.keyfile:
-            out[v.volume_id] = "initramfs" if v.role in ("root", "usr") else "after-root"
-    for s in source.swaps:
-        if s.luks is not None and s.luks.keyfile:
-            out[s.volume_id] = "after-root"
+    for item, early in [(v, v.role in early_roles) for v in source.volumes] + [
+            (s, s.resume) for s in source.swaps]:
+        luks = item.luks
+        if luks is not None and luks.keyfile:
+            needed = early or "initramfs" in luks.crypttab_options
+            out[item.volume_id] = "initramfs" if needed else "after-root"
     return out
 
 
 def _sqlite_writers(root: Path) -> list[tuple[str, str]]:
     """(database path, process name) for SQLite files some process holds open for writing."""
     proc, found = root / "proc", {}
-    try:
-        pids = sorted((p for p in os.listdir(proc) if p.isdigit()), key=int)
-    except OSError:
-        return []
-    for pid in pids:
-        try:
-            fds = os.listdir(proc / pid / "fd")
-        except OSError:
-            continue
-        for fd in fds:
+    for pid in sorted((p for p in _listdir(proc) if p.isdigit()), key=int):
+        for fd in _listdir(proc / pid / "fd"):
             try:
                 target = os.readlink(proc / pid / "fd" / fd)
                 info = (proc / pid / "fdinfo" / fd).read_text()

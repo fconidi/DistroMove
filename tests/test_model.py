@@ -11,7 +11,7 @@ INTERFACE = {
                   "start_sectors", "size_sectors", "logical_sector"),
     "Keyslot": ("index", "kdf", "cipher_info"),
     "LuksInfo": ("version", "cipher", "key_bits", "sector_size", "keyslots", "luks_uuid",
-                 "mapper_name", "keyfile"),
+                 "mapper_name", "keyfile", "crypttab_options"),
     "Subvol": ("id", "path", "mountpoint", "options", "properties", "has_active_swapfile",
                "only_swapfile"),
     "BtrfsInfo": ("fs_uuid", "default_subvol_id", "subvolumes"),
@@ -20,7 +20,7 @@ INTERFACE = {
     "Volume": ("volume_id", "role", "mountpoint", "partition", "luks", "fs", "fs_uuid",
                "used_bytes", "apparent_bytes", "used_inodes", "btrfs", "boot_inside_luks"),
     "SwapRef": ("volume_id", "kind", "path", "containing_volume_role", "uuid", "size_bytes",
-                "luks", "random_key"),
+                "luks", "random_key", "resume"),
     "LoaderInfo": ("bootloader_id", "path", "via_shim", "esp_uuid"),
     "Esp": ("partition", "mountpoint", "loader_dirs", "foreign_entries"),
     "Source": ("kind", "os_id", "volumes", "unmigrated_mounts", "esp", "swaps",
@@ -36,8 +36,9 @@ INTERFACE = {
     "Manifest": ("entries", "taken_at", "kind"),
 }
 
-# The only fields with a default: optional (``| None``) fields that come last.
-DEFAULTS = {("LuksInfo", "keyfile"): None, ("ManifestEntry", "sha256"): None}
+# The only fields with a default: trailing optional fields (``| None``, empty, false).
+DEFAULTS = {("LuksInfo", "keyfile"): None, ("LuksInfo", "crypttab_options"): (),
+            ("SwapRef", "resume"): False, ("ManifestEntry", "sha256"): None}
 
 
 @pytest.mark.parametrize("name", sorted(INTERFACE))

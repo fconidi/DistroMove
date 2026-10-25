@@ -423,6 +423,13 @@ def test_swapfile_subvolume_only_swapfile_vs_mixed(tmp_path):
     assert [s.has_active_swapfile for s in root_sv] == [False] * 5
     assert (home_sv[0].has_active_swapfile, home_sv[0].only_swapfile) == (True, False)
     assert [(s.path, s.containing_volume_role) for s in src.swaps] == [("/home/swapfile", "home")]
+    assert src.swaps[0].resume is False  # initramfs-tools never picks a swap file by itself
+    # resuming from that swap file needs the /home container in the initramfs
+    put(root, "etc/initramfs-tools/conf.d/resume",
+        f"RESUME=/dev/mapper/luks-{H}\nRESUME_OFFSET=34816\n")
+    src = discover_source(r, root)
+    assert src.swaps[0].resume is True
+    assert classify_keys(src)[src.volumes[1].volume_id] == "initramfs"
 
 
 def test_encrypted_swap_modeled(tmp_path):
@@ -463,10 +470,16 @@ def test_boot_inside_luks_detected(tmp_path):
 
 
 def test_keyfile_classified_initramfs_vs_after_root(tmp_path):
-    src = discover_source(*probe_of("syslinuxos", tmp_path))
+    src = discover_source(*probe_of("syslinuxos", tmp_path / "a"))
     ids = {v.role: v.volume_id for v in src.volumes}
+    # no RESUME setting: initramfs-tools resumes from the largest lasting swap, the LUKS one
     assert classify_keys(src) == {ids["root"]: "initramfs", ids["home"]: "after-root",
-                                  src.swaps[0].volume_id: "after-root"}
+                                  src.swaps[0].volume_id: "initramfs"}
+    r, root = probe_of("syslinuxos", tmp_path / "b")
+    put(root, "etc/initramfs-tools/conf.d/resume", "RESUME=none\n")
+    no_resume = discover_source(r, root)
+    assert classify_keys(no_resume) == {ids["root"]: "initramfs", ids["home"]: "after-root",
+                                        src.swaps[0].volume_id: "after-root"}
     no_keys = replace(src, swaps=[], volumes=[replace(v, luks=replace(v.luks, keyfile=None))
                                               for v in src.volumes])
     assert classify_keys(no_keys) == {}
@@ -564,7 +577,7 @@ def test_snapshot_contains_fstab_crypttab_mounts_mappers_esp_bootcurrent(tmp_pat
     assert ids["4d5e6f7a-8b9c-4d3e-9f4a-5b6c7d8e9fa0"].role == "swap"
     backup = ids["5e6f7a8b-9cad-4e4f-8a5b-6c7d8e9fa0b1"]
     assert (backup.role, backup.volume_id, backup.disk_by_id, backup.luks_uuid) == (
-        "extra", "", "/dev/disk/by-id/wwn-0x5000c500d1e2f3a4", None)
+        "foreign", "", "/dev/disk/by-id/wwn-0x5000c500d1e2f3a4", None)
     assert all(tuple(c) in r.fixtures for c in r.calls)
 
     # a device-mapper device without a UUID is kept, by name only
@@ -605,3 +618,161 @@ def test_database_activity_detects_postgres_and_docker(tmp_path):
         "PostgreSQL", "MySQL/MariaDB", "SQLite: /var/lib/app/state.db (sqlitebrowser)", "Docker"]
     quiet = FixtureRunner({("ps", "-e", "-o", "comm="): "systemd\nbash\n"})
     assert database_activity(quiet, tmp_path / "empty") == []
+
+
+# --------------------------------------------------------------------------- fail closed
+
+def test_system_mountpoint_not_on_a_block_device_Unsupported(tmp_path):
+    def with_home(name, *rows):
+        mounts = json.loads(fx("ext4", "findmnt.json"))
+        mounts["filesystems"] += [dict(zip(("source", "target", "fstype", "options", "fsroot"), row))
+                                  for row in rows]
+        return probe_of("ext4", tmp_path / name, {FINDMNT: json.dumps(mounts)})
+
+    zfs = with_home("zfs", ("rpool/home", "/home", "zfs", "rw,relatime,xattr,posixacl", "/"))
+    with pytest.raises(Unsupported) as exc:
+        discover_source(*zfs)
+    assert "/home" in exc.value.reason and "zfs" in exc.value.reason
+    automount = with_home("autofs", ("systemd-1", "/home", "autofs",
+                                     "rw,relatime,fd=48,pgrp=1,timeout=0,minproto=5,maxproto=5,"
+                                     "direct", "/"))
+    with pytest.raises(Unsupported) as exc:
+        discover_source(*automount)
+    assert "/home" in exc.value.reason and "trigger it first" in exc.value.reason
+    boot = with_home("bpool", ("bpool/BOOT/debian", "/boot", "zfs", "rw,nodev,relatime,xattr", "/"))
+    with pytest.raises(Unsupported):
+        discover_source(*boot)
+
+    # triggered automount of a network /home: stays where it is and is listed as not migrated
+    nfs = with_home("nfs", ("systemd-1", "/home", "autofs", "rw,relatime,fd=48,direct", "/"),
+                    ("files.example.org:/export/home", "/home", "nfs4",
+                     "rw,relatime,vers=4.2,rsize=1048576,wsize=1048576,hard,proto=tcp", "/"))
+    src = discover_source(*nfs)
+    assert [v.mountpoint for v in src.volumes] == ["/"]
+    assert "/home" in [m.target for m in src.unmigrated_mounts]
+
+
+QEMU_DISK = ("Boot0004* UEFI QEMU HARDDISK QM00001 "
+             "\tPciRoot(0x0)/Pci(0x1,0x1)/Ata(0,0,0)N.....YM....R,Y.\n"
+             "      dp: 02 01 0c 00 d0 41 03 0a 00 00 00 00 / 01 01 06 00 01 01"
+             " / 03 01 08 00 00 00 00 00 / 7f ff 04 00\n"
+             "    data: 4e ac 08 81 11 9f 59 4d 85 0e e2 1a 52 2c 59 b2\n")
+FALLBACK = ("Boot0004* UEFI OS\tHD(1,GPT,c7d6e5f4-a3b2-4c1d-9e0f-1a2b3c4d5e6f,0x800,0x100000)"
+            "/File(\\EFI\\BOOT\\BOOTX64.EFI)..BO\n"
+            "      dp: 04 01 2a 00 01 00 00 00 00 08 00 00 00 00 00 00 00 00 10 00 00 00 00 00"
+            " f4 e5 d6 c7 b2 a3 1d 4c 9e 0f 1a 2b 3c 4d 5e 6f 02 02 / 7f ff 04 00\n"
+            "    data: 00 00 42 4f\n")
+
+
+def booted_by(entry, current="0004"):
+    text = fx("btrfs", "efibootmgr.txt") + entry
+    if current is None:
+        return {("efibootmgr", "-v"): text.replace("BootCurrent: 0003\n", "")}
+    return {("efibootmgr", "-v"): text.replace("BootCurrent: 0003", f"BootCurrent: {current}")}
+
+
+def test_grub_accepted_only_on_evidence(tmp_path):
+    # positive evidence: the booted entry is EFI/debian/shimx64.efi on the chosen ESP
+    assert discover_source(*probe_of("btrfs", tmp_path / "a")).esp.foreign_entries == ["Microsoft"]
+    # secondary evidence: firmware device entry, removable path, or no BootCurrent at all
+    for name, over in (("disk", booted_by(QEMU_DISK)), ("fallback", booted_by(FALLBACK)),
+                       ("none", booted_by("", current=None))):
+        src = discover_source(*probe_of("btrfs", tmp_path / name, over))
+        assert (src.esp.loader_dirs, src.esp.foreign_entries) == (
+            ["BOOT", "Microsoft", "debian"], ["Microsoft"]), name
+
+
+@pytest.mark.parametrize("case", ["systemd-boot", "loader-conf", "uki", "no-grub-package",
+                                  "two-grubs", "secure-boot"])
+def test_grub_without_evidence_Unsupported(tmp_path, case):
+    name = "ext4" if case == "secure-boot" else "btrfs"
+    over = booted_by(FALLBACK) if name == "btrfs" else {("efibootmgr", "-v"): fx(
+        "ext4", "efibootmgr.txt").replace("BootCurrent: 0001", "BootCurrent: 0002")}
+    r, root = probe_of(name, tmp_path, over)
+    extra = {"systemd-boot": "boot/efi/EFI/systemd/systemd-bootx64.efi",
+             "loader-conf": "boot/efi/loader/loader.conf",
+             "uki": "boot/efi/EFI/Linux/debian-6.12.48-amd64.efi",
+             "two-grubs": "boot/efi/EFI/ubuntu/grubx64.efi"}.get(case)
+    if extra:
+        put(root, extra)
+    if case == "no-grub-package":
+        put(root, "var/lib/dpkg/status", fx("btrfs", "dpkg-status").replace(
+            "Package: grub-efi-amd64", "Package: grub-pc-template"))
+    with pytest.raises(Unsupported) as exc:
+        discover_source(r, root)
+    word = {"systemd-boot": "systemd-boot", "loader-conf": "systemd-boot", "uki": "systemd-boot",
+            "no-grub-package": "grub-efi-amd64", "two-grubs": "cannot tell",
+            "secure-boot": "Secure Boot"}[case]
+    assert word in exc.value.reason
+
+
+def test_resume_device_marked_and_initramfs_option_classified(tmp_path):
+    src = discover_source(*probe_of("syslinuxos", tmp_path / "auto"))
+    assert [(s.path, s.resume) for s in src.swaps] == [("/dev/nvme0n1p4", True), ("/dev/sda1", False)]
+    root_v, home_v = src.volumes
+    assert root_v.luks.crypttab_options == ("luks", "discard", "keyscript=/bin/cat")
+    assert home_v.luks.crypttab_options == ("luks", "discard")
+    swap_id = src.swaps[0].volume_id
+
+    def probed(name, resume=None, cmdline=None, crypttab=None):
+        r, root = probe_of("syslinuxos", tmp_path / name)
+        for rel, text in (("etc/initramfs-tools/conf.d/resume", resume), ("proc/cmdline", cmdline),
+                          ("etc/crypttab", crypttab)):
+            if text is not None:
+                put(root, rel, text)
+        return discover_source(r, root)
+
+    named = probed("uuid", resume="RESUME=UUID=0d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a\n")
+    assert [s.resume for s in named.swaps] == [True, False]
+    off = probed("none", resume="RESUME=none\n")
+    assert [s.resume for s in off.swaps] == [False, False]
+    cmdline = (f"BOOT_IMAGE=/@/boot/vmlinuz-6.12.48-amd64 root=UUID={SLX_ROOT_FS} ro "
+               f"rootflags=subvol=@ resume=/dev/mapper/luks-{S} quiet\n")
+    kernel = probed("cmdline", resume="RESUME=none\n", cmdline=cmdline)
+    assert [s.resume for s in kernel.swaps] == [True, False]
+    assert classify_keys(kernel)[swap_id] == "initramfs"
+    # RESUME naming no swap: initramfs-tools falls back to its own choice
+    stale = probed("stale", resume="RESUME=UUID=00000000-1111-4222-8333-444444444444\n")
+    assert [s.resume for s in stale.swaps] == [True, False]
+    # the random-key swap is never a resume target, even when named
+    rnd = probed("random", resume="RESUME=/dev/mapper/cswap2\n")
+    assert rnd.swaps[1].resume is False
+
+    crypttab = fx("syslinuxos", "crypttab").replace(
+        "home.key luks,discard", "home.key luks,discard,initramfs")
+    forced = probed("initramfs", resume="RESUME=none\n", crypttab=crypttab)
+    assert forced.volumes[1].luks.crypttab_options == ("luks", "discard", "initramfs")
+    assert classify_keys(forced) == {forced.volumes[0].volume_id: "initramfs",
+                                     forced.volumes[1].volume_id: "initramfs", swap_id: "after-root"}
+
+
+def test_snapshot_keeps_roles_of_included_volumes(tmp_path):
+    over = df("/srv/data", 189234561024, 20811) | du("/srv/data", 187654321098)
+    r, root = probe_of("ext4", tmp_path, over)
+    src = discover_source(r, root, extra_mounts=["/srv/data"])
+    root_v, extra_v = src.volumes
+    snap = collect_snapshot(r, root, source=src)
+    ids = {i.partuuid: i for i in snap.identities}
+    assert (ids[extra_v.partition.partuuid].role, ids[extra_v.partition.partuuid].volume_id) == (
+        "extra", extra_v.volume_id)
+    assert (ids[root_v.partition.partuuid].role, ids[root_v.partition.partuuid].volume_id) == (
+        "root", root_v.volume_id)
+    swap = ids["2c3d4e5f-6071-4b82-893d-a4e5f6071829"]
+    assert (swap.role, swap.volume_id) == ("swap", src.swaps[0].volume_id)
+    assert [s.volume_id for s in snap.swaps] == [s.volume_id for s in src.swaps]
+    for partuuid in ("7e1c2d3b-4a59-4687-b5c4-d3e2f1a0b9c8", "9f8e7d6c-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+                     "0e5d7a1c-01"):
+        assert (ids[partuuid].role, ids[partuuid].volume_id) == ("foreign", "")
+    assert ids["5d0b6f1a-3c2e-4b8d-9f7a-1e2d3c4b5a69"].role == "esp"
+
+    # without the source the included volume cannot be told apart: it is foreign
+    plain = {i.partuuid: i for i in collect_snapshot(r, root).identities}
+    assert (plain[extra_v.partition.partuuid].role, plain[extra_v.partition.partuuid].volume_id) == (
+        "foreign", "")
+
+    # after the old root is unmounted (booted into the copy) its partition keeps its identity
+    mounts = fx("ext4", "findmnt.json").replace('"source": "/dev/nvme0n1p2"', '"source": "/dev/sda4"')
+    r2, root2 = probe_of("ext4", tmp_path / "later", {FINDMNT: mounts})
+    later = {i.partuuid: i for i in collect_snapshot(r2, root2, source=src).identities}
+    assert (later[root_v.partition.partuuid].role, later[root_v.partition.partuuid].volume_id) == (
+        "root", root_v.volume_id)

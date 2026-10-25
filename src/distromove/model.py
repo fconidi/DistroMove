@@ -53,6 +53,7 @@ class LuksInfo:
     luks_uuid: str
     mapper_name: str | None        # name of the open mapping, when known
     keyfile: str | None = None     # path of the key file used in crypttab, if any
+    crypttab_options: tuple[str, ...] = ()  # its crypttab options (initramfs, keyscript=...)
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ class SwapRef:
     size_bytes: int
     luks: LuksInfo | None
     random_key: bool               # encrypted with a random key at each boot (no resume)
+    resume: bool = False           # the initramfs resumes from it (hibernation target)
 
 
 @dataclass(frozen=True)
@@ -155,7 +157,7 @@ class VolumeIdentity:
     Never a kernel device name, which can change between boots.
     """
     volume_id: str
-    role: str                      # root, boot, home, var, usr, opt, srv, swap, esp, extra
+    role: str                      # root, boot, home, var, usr, opt, srv, swap, esp, extra, foreign
     disk_wwn: str | None
     disk_serial: str | None
     disk_by_id: str | None
