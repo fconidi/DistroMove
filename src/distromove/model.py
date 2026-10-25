@@ -198,13 +198,15 @@ class CreatedPartition:
 class SystemSnapshot:
     """One coherent picture of the live system, read again before every destructive step.
 
-    - ``mounts``: every mount of the running system.
-    - ``mappers``: one entry per device-mapper device: its name, optionally followed by a
-      space and its device-mapper UUID (``CRYPT-LUKS2-<uuid without dashes>-<name>`` for
-      LUKS), as ``dmsetup info -c --noheadings -o name,uuid`` prints them.
+    - ``mounts``: every mount of the running system (sources as the kernel reports them).
+    - ``mappers``: one entry per device-mapper device, ``"<name> <dm-uuid>"``, as
+      ``dmsetup info -c --noheadings -o name,uuid --separator ' '`` prints them; the
+      device-mapper UUID is mandatory (``CRYPT-LUKS2-<LUKS UUID without dashes>-<name>``
+      for LUKS). An entry without it is treated as possibly any encrypted volume.
     - ``esp_contents``: ESP PARTUUID -> names of the directories under ``EFI/``.
     - ``boot_current``: the four hex digits of the entry the firmware booted (``BootCurrent``).
-    - ``boot_entries``: four hex digits -> the entry line printed by ``efibootmgr -v``.
+    - ``boot_entries``: four hex digits -> the entry line printed by ``efibootmgr -v``
+      (label, GPT PARTUUID of the ESP and loader path).
     - ``identities``: every partition visible on the system.
     """
     fstab: str

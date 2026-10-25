@@ -43,11 +43,22 @@ def live_volume(partuuid, start=2048, size=4096, wwn=WWN, fs_uuid=None, luks_uui
 
 
 def snapshot(identities=(), *, fstab="", crypttab="", mounts=(), mappers=(), swaps=(),
+             esp_contents=None, boot_current=None, boot_entries=None,
              running_root_uuid=ROOT_UUID):
     return SystemSnapshot(fstab=fstab, crypttab=crypttab, mounts=list(mounts),
-                          mappers=list(mappers), swaps=list(swaps), esp_contents={},
-                          boot_current=None, boot_entries={}, identities=list(identities),
+                          mappers=list(mappers), swaps=list(swaps),
+                          esp_contents=dict(esp_contents or {}), boot_current=boot_current,
+                          boot_entries=dict(boot_entries or {}), identities=list(identities),
                           running_root_uuid=running_root_uuid)
+
+
+def NO_LINKS(path):
+    """Resolver for a system where no /dev/disk link exists."""
+    return path
+
+
+def links(mapping):
+    return lambda path: mapping.get(path, path)
 
 
 def new_journal(jdir, migration_id="m1", host=ROOT_UUID):
@@ -427,11 +438,11 @@ def test_recover_never_returns_an_active_resource(tmp_path):
         crypttab=f"data_crypt UUID={LU['d']} none luks\n",
         mounts=[MountInfo("/dev/vdb1", "/media/user/disk", "ext4", "rw,nosuid"),
                 MountInfo(f"/dev/disk/by-partuuid/{PU['b']}", "/mnt/b", "ext4", "rw")],
-        mappers=["distromove-m1-home",
+        mappers=["distromove-m1-home CRYPT-PLAIN-distromove-m1-home",
                  f"other CRYPT-LUKS2-{LU['f'].replace('-', '')}-other"],
         swaps=[SwapRef("swap0", "partition", "/dev/vdb7", None, FU["g"], 1 << 30, None, False)],
     )
-    found = recover(jdir, live, ROOT_UUID)
+    found = recover(jdir, live, ROOT_UUID, resolve=NO_LINKS)
     assert [r.identity["partuuid"] for r in found] == [PU_IDLE]
     # the running root is excluded whether the argument or the snapshot names it
     as_root = [live_volume(PU["h"], start=8_000, fs_uuid=ROOT_UUID)]
@@ -450,3 +461,307 @@ def test_recover_excludes_encrypted_swap_and_mapper_of_open_container(tmp_path):
                     swaps=[SwapRef("swap0", "partition", "/dev/mapper/swap_crypt", None, None,
                                    1 << 30, luks, False)])
     assert recover(jdir, live, ROOT_UUID) == []
+
+
+# ------------------------------------------------------------------ in-use detection
+
+def test_recover_sees_device_path_recorded_only_on_the_outcome(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    op = j.intend("create_partition", part_identity(PU["a"]), creates="partition")
+    j.done(op, "created", path="/dev/vdb2")  # the kernel path is known only once created
+    j.done(j.intend("mkfs", {"fs_uuid": FU["a"], "partuuid": PU["a"]}, creates="filesystem"),
+           "ok")
+    live_ids = [live_volume(PU["a"], fs_uuid=FU["a"])]
+    mounted = snapshot(live_ids, mounts=[
+        MountInfo("/dev/vdb2", "/mnt/distromove-m1/root", "ext4", "rw,relatime")])
+    assert recover(jdir, mounted, ROOT_UUID, resolve=NO_LINKS) == []
+    idle = recover(jdir, snapshot(live_ids), ROOT_UUID, resolve=NO_LINKS)
+    assert [r.kind for r in idle] == ["partition", "filesystem"]
+
+
+def test_recover_sees_mapper_named_only_by_a_later_luks_open(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    j.done(j.intend("create_partition", part_identity(PU["a"]), creates="partition"), "created")
+    j.done(j.intend("luks_format", {"luks_uuid": LU["a"], "partuuid": PU["a"]}, creates="luks"),
+           "ok")
+    j.done(j.intend("luks_open", {"luks_uuid": LU["a"]}, mapper_name="distromove-m1-root"), "ok")
+    in_mount = [MountInfo("/dev/mapper/distromove-m1-root", "/mnt/distromove-m1/root", "ext4",
+                          "rw")]
+    in_table = ["distromove-m1-root CRYPT-PLAIN-distromove-m1-root"]
+    for live_ids in ([live_volume(PU["a"], luks_uuid=LU["a"])],
+                     # the container's UUID not visible: still linked through luks_format
+                     [live_volume(PU["a"])]):
+        assert recover(jdir, snapshot(live_ids, mounts=in_mount), ROOT_UUID,
+                       resolve=NO_LINKS) == []
+        assert recover(jdir, snapshot(live_ids, mappers=in_table), ROOT_UUID,
+                       resolve=NO_LINKS) == []
+    idle = recover(jdir, snapshot([live_volume(PU["a"], luks_uuid=LU["a"])]), ROOT_UUID,
+                   resolve=NO_LINKS)
+    assert [r.kind for r in idle] == ["partition", "luks"]
+
+
+def test_recover_treats_mapper_without_dm_uuid_as_possibly_an_open_container(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    j.done(j.intend("luks_format", {"luks_uuid": LU["a"], "partuuid": PU["a"]}, creates="luks"),
+           "ok")
+    j.done(j.intend("create_partition", part_identity(PU["b"], start=10_000),
+                    creates="partition"), "created")
+    live_ids = [live_volume(PU["a"], luks_uuid=LU["a"]), live_volume(PU["b"], start=10_000)]
+    unknown = recover(jdir, snapshot(live_ids, mappers=["cryptdata"]), ROOT_UUID,
+                      resolve=NO_LINKS)
+    assert [r.identity.get("partuuid") for r in unknown] == [PU["b"]]  # plain one only
+    known = recover(jdir, snapshot(live_ids, mappers=["vg0-swap LVM-Q2x9abcdef"]), ROOT_UUID,
+                    resolve=NO_LINKS)
+    assert [r.kind for r in known] == ["luks", "partition"]
+
+
+def test_recover_resolves_renamed_kernel_device(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    op = j.intend("create_partition", part_identity(PU["a"]), creates="partition",
+                  path="/dev/vdb2")
+    j.done(op, "created", path="/dev/vdb2")
+    live_ids = [live_volume(PU["a"], fs_uuid=FU["a"])]
+    # after a reboot the disk is vdc and the desktop mounted the partition by kernel path
+    automounted = snapshot(live_ids, mounts=[
+        MountInfo("/dev/vdc2", "/media/user/root", "ext4", "rw,nosuid,nodev")])
+    by_partuuid = links({f"/dev/disk/by-partuuid/{PU['a']}": "/dev/vdc2"})
+    by_uuid = links({f"/dev/disk/by-uuid/{FU['a']}": "/dev/vdc2"})
+    assert recover(jdir, automounted, ROOT_UUID, resolve=by_partuuid) == []
+    assert recover(jdir, automounted, ROOT_UUID, resolve=by_uuid) == []
+    # active swap on the renamed device is seen the same way
+    swapping = snapshot(live_ids, swaps=[
+        SwapRef("s", "partition", "/dev/vdc2", None, None, 1 << 30, None, False)])
+    assert recover(jdir, swapping, ROOT_UUID, resolve=by_partuuid) == []
+    # it is the stable link that ties the mount to the partition: the stale path does not
+    assert len(recover(jdir, automounted, ROOT_UUID, resolve=NO_LINKS)) == 1
+
+
+def test_recover_resolves_by_id_and_case_of_uuid_links(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    j.done(j.intend("create_partition", part_identity(PU["b"]), creates="partition", number=1),
+           "created")
+    j.done(j.intend("mkfs", {"fs_uuid": "abcd-1234", "partuuid": PU["b"]}, creates="filesystem"),
+           "ok")
+    live_ids = [live_volume(PU["b"], fs_uuid="abcd-1234")]
+    mounted = snapshot(live_ids, mounts=[MountInfo("/dev/sdc1", "/media/user/ESP", "vfat", "rw")])
+    by_id = links({"/dev/disk/by-id/ata-NEWDISK_SER123-part1": "/dev/sdc1"})
+    upper = links({"/dev/disk/by-uuid/ABCD-1234": "/dev/sdc1"})  # vfat links are upper case
+    assert recover(jdir, mounted, ROOT_UUID, resolve=by_id) == []
+    assert recover(jdir, mounted, ROOT_UUID, resolve=upper) == []
+    assert len(recover(jdir, mounted, ROOT_UUID, resolve=NO_LINKS)) == 2
+
+
+# ------------------------------------------------------------------ end of a migration
+
+def test_finish_retires_current_and_ends_recovery(tmp_path, fsyncs):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    op = j.intend("create_partition", part_identity(PU["a"]), creates="partition")
+    j.done(op, "created")
+    live = snapshot([live_volume(PU["a"])])
+    assert len(recover(jdir, live, ROOT_UUID)) == 1
+    fsyncs.clear()
+
+    j.finish("activated")
+
+    end = read_journal(j.path)[-1]
+    assert end["type"] == "end" and end["outcome"] == "activated"
+    assert not os.path.lexists(jdir / "current")
+    real_dir = str(jdir.resolve())
+    file_syncs = [i for i, (p, c) in enumerate(fsyncs)
+                  if p == str(j.path.resolve()) and b'"type":"end"' in c]
+    dir_syncs = [i for i, (p, c) in enumerate(fsyncs) if p == real_dir]
+    assert file_syncs and dir_syncs and max(dir_syncs) > min(file_syncs)
+    # booted back into the source: the migrated system's volumes are not residues
+    assert recover(jdir, live, ROOT_UUID) == []
+    assert current_journal(jdir, ROOT_UUID) is None
+    assert open_windows(jdir, ROOT_UUID) == []
+    assert archived_journals(jdir, ROOT_UUID) == [j.path]
+    with pytest.raises(RuntimeError):
+        j.intend("create_partition", part_identity(PU["b"]), creates="partition")
+    with pytest.raises(RuntimeError):
+        j.done(op, "removed")
+    with pytest.raises(ValueError):
+        new_journal(jdir)  # a finished journal is never reopened
+
+
+def test_finished_journal_is_ignored_even_if_current_link_survived(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    j.done(j.intend("create_partition", part_identity(PU["a"]), creates="partition"), "created")
+    j.finish("activated")
+    os.symlink(j.path.name, jdir / "current")  # power lost between the end line and unlink
+    assert current_journal(jdir, ROOT_UUID) is None
+    assert recover(jdir, snapshot([live_volume(PU["a"])]), ROOT_UUID) == []
+
+
+DIE_BEFORE_LINK = """
+import os, signal, sys
+from pathlib import Path
+import distromove.journal as jm
+
+def die(*args, **kwargs):
+    os.kill(os.getpid(), signal.SIGKILL)
+
+jm.link_atomic = die
+jm.Journal(Path(sys.argv[1]), migration_id=sys.argv[3], host_root_uuid=sys.argv[2])
+"""
+
+
+def test_new_journal_killed_before_linking_current(tmp_path):
+    jdir = tmp_path / "journal"
+    live = snapshot([live_volume(PU["a"]), live_volume(PU["b"], start=10_000)])
+
+    done = new_journal(jdir, migration_id="m1")
+    done.done(done.intend("create_partition", part_identity(PU["a"]), creates="partition"),
+              "created")
+    done.finish("activated")
+    os.symlink(done.path.name, jdir / "current")  # stale link left over
+    res = subprocess.run([sys.executable, "-c", DIE_BEFORE_LINK, str(jdir), ROOT_UUID, "m2"],
+                         env=child_env(), timeout=30)
+    assert res.returncode == -signal.SIGKILL
+    assert [e["type"] for e in read_journal(jdir / "journal-m2.jsonl")] == ["header"]
+    # the completed migration is not revived, and the new one never wrote an intent
+    assert recover(jdir, live, ROOT_UUID) == []
+
+    # an unfinished earlier migration stays current: its leftovers are real
+    os.unlink(jdir / "current")
+    crashed = new_journal(jdir, migration_id="m3")
+    crashed.intend("create_partition", part_identity(PU["b"], start=10_000), creates="partition")
+    res = subprocess.run([sys.executable, "-c", DIE_BEFORE_LINK, str(jdir), ROOT_UUID, "m4"],
+                         env=child_env(), timeout=30)
+    assert res.returncode == -signal.SIGKILL
+    assert [r.identity["partuuid"] for r in recover(jdir, live, ROOT_UUID)] == [PU["b"]]
+
+
+def test_intend_refused_when_journal_is_no_longer_current(tmp_path):
+    jdir = tmp_path / "journal"
+    j1 = new_journal(jdir, migration_id="m1")
+    a = j1.intend("create_partition", part_identity(PU["a"]), creates="partition")
+    new_journal(jdir, migration_id="m2")
+    with pytest.raises(RuntimeError):
+        j1.intend("create_partition", part_identity(PU["b"]), creates="partition")
+    with pytest.raises(RuntimeError):
+        j1.window_open("freeze:/")
+    j1.done(a, "created")  # outcomes of operations already journaled are still recorded
+    assert [e["type"] for e in read_journal(j1.path)] == ["header", "intent", "outcome"]
+
+
+def test_finish_refused_while_a_freeze_window_is_open(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    w = j.window_open("freeze:/")
+    with pytest.raises(RuntimeError):
+        j.finish()
+    with pytest.raises(RuntimeError):
+        new_journal(jdir).finish()  # also when reopened after a restart
+    j.window_close(w)
+    j.finish()
+    assert read_journal(j.path)[-1]["type"] == "end"
+
+
+# ------------------------------------------------------------------ EFI and NVRAM
+
+ESP = "c0ffee00-1111-4222-8333-444455556666"
+ESP_OLD = "0e5f0e5f-1111-4222-8333-444455556666"
+OLD_ENTRY = f"Boot0000* debian\tHD(1,GPT,{ESP_OLD},0x800,0x100000)/File(\\EFI\\debian\\shimx64.efi)"
+NEW_ENTRY = (f"Boot0007* DistroMove (new)\tHD(1,GPT,{ESP},0x800,0x100000)"
+             "/File(\\EFI\\distromove\\shimx64.efi)")
+EFI_ID = {"esp_partuuid": ESP, "efi_dir": "distromove"}
+NVRAM_ID = {"esp_partuuid": ESP, "loader": "/EFI/distromove/shimx64.efi",
+            "label": "DistroMove (new)"}
+
+
+def efi_journal(jdir, bootnum="0007"):
+    j = new_journal(jdir)
+    j.done(j.intend("copy_esp", EFI_ID, creates="efi_dir"), "created")
+    op = j.intend("register_entry", NVRAM_ID, creates="nvram_entry")
+    if bootnum is not None:
+        j.done(op, "created", bootnum=bootnum)
+    return j
+
+
+def boot_snapshot(entries, current="0000", contents=None, identities=()):
+    return snapshot(identities, esp_contents=contents or {ESP.upper(): ["BOOT", "DistroMove"],
+                                                          ESP_OLD: ["BOOT", "debian"]},
+                    boot_current=current, boot_entries=entries)
+
+
+def test_recover_reports_efi_dir_and_nvram_entry(tmp_path):
+    live = boot_snapshot({"0000": OLD_ENTRY, "0007": NEW_ENTRY})
+    efi_journal(tmp_path / "a")
+    found = recover(tmp_path / "a", live, ROOT_UUID)
+    assert [(r.kind, r.proof["live"]) for r in found] == [
+        ("efi_dir", {"esp_partuuid": ESP.upper(), "efi_dir": "DistroMove"}),
+        ("nvram_entry", {"bootnum": "0007", "entry": NEW_ENTRY})]
+    assert found[0].identity == EFI_ID and found[1].identity == NVRAM_ID
+    # the process died after efibootmgr and before the outcome: found by ESP and loader
+    efi_journal(tmp_path / "b", bootnum=None)
+    found = recover(tmp_path / "b", live, ROOT_UUID)
+    assert [(r.kind, r.proof["outcome"]) for r in found] == [("efi_dir", "created"),
+                                                             ("nvram_entry", None)]
+    assert found[1].proof["live"]["bootnum"] == "0007"
+
+
+def test_recover_never_returns_booted_nvram_entry_or_its_efi_dir(tmp_path):
+    j = efi_journal(tmp_path / "journal")
+    j.done(j.intend("create_partition", part_identity(ESP), creates="partition"), "created")
+    entries = {"0000": OLD_ENTRY, "0007": NEW_ENTRY}
+    esp = [live_volume(ESP)]
+    booted = boot_snapshot(entries, current="0007", identities=esp)
+    assert recover(tmp_path / "journal", booted, ROOT_UUID, resolve=NO_LINKS) == []
+    # booted from the old system: entry, directory and new ESP are all leftovers
+    other = boot_snapshot(entries, current="0000", identities=esp)
+    assert {r.kind for r in recover(tmp_path / "journal", other, ROOT_UUID, resolve=NO_LINKS)} == {
+        "efi_dir", "nvram_entry", "partition"}
+
+
+@pytest.mark.parametrize("case", [
+    "dir-on-other-esp", "dir-used-by-foreign-entry", "entry-other-esp", "entry-other-loader",
+    "entry-other-label",
+    "recorded-number-reused", "ambiguous-entries"])
+def test_recover_ignores_efi_and_nvram_lookalikes(tmp_path, case):
+    entries = {"0000": OLD_ENTRY, "0007": NEW_ENTRY}
+    contents = None
+    bootnum = "0007"
+    expected = {"efi_dir", "nvram_entry"}
+    if case == "dir-on-other-esp":
+        contents = {ESP_OLD: ["BOOT", "debian", "distromove"], ESP: ["BOOT"]}
+        expected = {"nvram_entry"}
+    elif case == "dir-used-by-foreign-entry":
+        entries["0003"] = (f"Boot0003* Other\tHD(1,GPT,{ESP},0x800,0x100000)"
+                           "/File(\\EFI\\distromove\\grubx64.efi)")
+        expected = {"nvram_entry"}
+    elif case == "entry-other-esp":
+        entries["0007"] = NEW_ENTRY.replace(ESP, ESP_OLD)  # same label and loader path
+        expected = {"efi_dir"}
+    elif case == "entry-other-loader":
+        entries["0007"] = NEW_ENTRY.replace("\\distromove\\", "\\debian\\")
+        expected = {"efi_dir"}
+    elif case == "entry-other-label":
+        entries["0007"] = NEW_ENTRY.replace("DistroMove (new)", "Other system")
+        expected = set()  # not ours, and it points into our EFI dir: the dir is in use
+    elif case == "recorded-number-reused":
+        entries["0007"] = OLD_ENTRY.replace("Boot0000", "Boot0007")
+        entries["0008"] = NEW_ENTRY.replace("Boot0007", "Boot0008")
+        expected = set()  # 0008 is not ours; and it keeps our EFI dir in use
+    elif case == "ambiguous-entries":
+        bootnum = None
+        entries["0008"] = NEW_ENTRY.replace("Boot0007", "Boot0008")
+        expected = set()
+    efi_journal(tmp_path / "journal", bootnum=bootnum)
+    found = recover(tmp_path / "journal", boot_snapshot(entries, contents=contents), ROOT_UUID)
+    assert {r.kind for r in found} == expected
+
+
+def test_recover_never_reports_btrfs_snapshots(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    j.done(j.intend("snapshot", {"fs_uuid": FU["a"], "snapshot_path": "@distromove-m1"},
+                    creates="snapshot"), "created")
+    assert recover(jdir, snapshot([live_volume(PU["a"], fs_uuid=FU["a"])]), ROOT_UUID) == []
