@@ -1,0 +1,6 @@
+ID 256 gen 48213 top level 5 path @
+ID 257 gen 48213 top level 5 path @home
+ID 258 gen 48210 top level 5 path @log
+ID 259 gen 47002 top level 5 path @swap
+ID 260 gen 47920 top level 256 path @/var/lib/portables
+ID 261 gen 47921 top level 256 path @/var/lib/machines

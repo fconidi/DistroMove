@@ -1,0 +1,4 @@
+Label: 'home'  uuid: 9b8c7d6e-5f4a-4b2c-8d1e-f2a3b4c5d6e7
+	Total devices 1 FS bytes used 112.80GiB
+	devid    1 size 499.98GiB used 118.02GiB path /dev/mapper/luks-6b5a4f3e-2d1c-4b0a-9f8e-7d6c5b4a3f2e
+

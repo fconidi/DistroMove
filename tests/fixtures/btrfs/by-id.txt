@@ -1,0 +1,9 @@
+nvme-WD_BLACK_SN770_1TB_23251A800123 -> ../../nvme0n1
+nvme-WD_BLACK_SN770_1TB_23251A800123-part1 -> ../../nvme0n1p1
+nvme-WD_BLACK_SN770_1TB_23251A800123-part2 -> ../../nvme0n1p2
+nvme-WD_BLACK_SN770_1TB_23251A800123_1 -> ../../nvme0n1
+nvme-WD_BLACK_SN770_1TB_23251A800123_1-part1 -> ../../nvme0n1p1
+nvme-WD_BLACK_SN770_1TB_23251A800123_1-part2 -> ../../nvme0n1p2
+nvme-eui.e8238fa6bf530001001b448b4a1c2d3e -> ../../nvme0n1
+nvme-eui.e8238fa6bf530001001b448b4a1c2d3e-part1 -> ../../nvme0n1p1
+nvme-eui.e8238fa6bf530001001b448b4a1c2d3e-part2 -> ../../nvme0n1p2

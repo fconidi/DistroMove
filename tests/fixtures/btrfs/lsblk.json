@@ -1,0 +1,53 @@
+{
+   "blockdevices": [
+      {
+         "name": "nvme0n1",
+         "kname": "nvme0n1",
+         "path": "/dev/nvme0n1",
+         "pkname": null,
+         "type": "disk",
+         "size": 1000204886016,
+         "fstype": null,
+         "uuid": null,
+         "partuuid": null,
+         "parttype": null,
+         "start": null,
+         "log-sec": 512,
+         "wwn": "eui.e8238fa6bf530001001b448b4a1c2d3e",
+         "serial": "23251A800123",
+         "mountpoint": null
+      },{
+         "name": "nvme0n1p1",
+         "kname": "nvme0n1p1",
+         "path": "/dev/nvme0n1p1",
+         "pkname": "nvme0n1",
+         "type": "part",
+         "size": 536870912,
+         "fstype": "vfat",
+         "uuid": "B3D1-7E4F",
+         "partuuid": "c7d6e5f4-a3b2-4c1d-9e0f-1a2b3c4d5e6f",
+         "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+         "start": 2048,
+         "log-sec": 512,
+         "wwn": "eui.e8238fa6bf530001001b448b4a1c2d3e",
+         "serial": null,
+         "mountpoint": "/boot/efi"
+      },{
+         "name": "nvme0n1p2",
+         "kname": "nvme0n1p2",
+         "path": "/dev/nvme0n1p2",
+         "pkname": "nvme0n1",
+         "type": "part",
+         "size": 966367641600,
+         "fstype": "btrfs",
+         "uuid": "e1f2a3b4-c5d6-4e7f-8091-a2b3c4d5e6f7",
+         "partuuid": "f0e1d2c3-b4a5-4697-8879-6a5b4c3d2e1f",
+         "parttype": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+         "start": 1050624,
+         "log-sec": 512,
+         "wwn": "eui.e8238fa6bf530001001b448b4a1c2d3e",
+         "serial": null,
+         "mountpoint": "/"
+      }
+   ]
+}

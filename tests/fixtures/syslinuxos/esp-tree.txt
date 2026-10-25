@@ -1,0 +1,8 @@
+EFI/BOOT/BOOTX64.EFI
+EFI/BOOT/fbx64.efi
+EFI/BOOT/mmx64.efi
+EFI/SysLinuxOS/shimx64.efi
+EFI/SysLinuxOS/grubx64.efi
+EFI/SysLinuxOS/mmx64.efi
+EFI/SysLinuxOS/BOOTX64.CSV
+EFI/SysLinuxOS/grub.cfg

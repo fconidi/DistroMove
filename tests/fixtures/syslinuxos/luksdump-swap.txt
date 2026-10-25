@@ -1,0 +1,32 @@
+LUKS header information for /dev/nvme0n1p4
+
+Version:       	1
+Cipher name:   	aes
+Cipher mode:   	xts-plain64
+Hash spec:     	sha256
+Payload offset:	4096
+MK bits:       	512
+MK digest:     	77 ef b3 c2 a3 c5 6d ac 44 ca 2f d1 f3 ef 38 bd d0 76 e5 f4 
+MK salt:       	4c 72 67 a1 03 1f d0 6b 95 ab d0 95 87 a7 4a f5 
+               	d6 dd db 51 79 c9 55 ef 7b 25 21 02 03 5d a9 49 
+MK iterations: 	127840
+UUID:          	7c6b5a4f-3e2d-4c1b-a0f9-8e7d6c5b4a3f
+
+Key Slot 0: ENABLED
+	Iterations:         	2045632
+	Salt:               	81 45 fa eb 70 f0 41 f7 d8 4b 74 08 1b 0f 87 0a 
+	                      	70 c5 ea 95 6b 91 76 1c 27 95 52 e6 9b 6d a4 f0 
+	Key material offset:	8
+	AF stripes:            	4000
+Key Slot 1: ENABLED
+	Iterations:         	2044632
+	Salt:               	7a 22 d7 fb c2 7a f2 28 de d3 cb 4f 03 2f 0d de 
+	                      	f2 00 26 40 d4 02 99 b9 d1 bb 25 4f a9 ed d5 e9 
+	Key material offset:	520
+	AF stripes:            	4000
+Key Slot 2: DISABLED
+Key Slot 3: DISABLED
+Key Slot 4: DISABLED
+Key Slot 5: DISABLED
+Key Slot 6: DISABLED
+Key Slot 7: DISABLED

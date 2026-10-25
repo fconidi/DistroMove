@@ -1,0 +1,4 @@
+Label: none  uuid: e1f2a3b4-c5d6-4e7f-8091-a2b3c4d5e6f7
+	Total devices 1 FS bytes used 38.12GiB
+	devid    1 size 900.00GiB used 41.02GiB path /dev/nvme0n1p2
+

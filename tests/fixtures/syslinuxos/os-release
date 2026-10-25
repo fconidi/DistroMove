@@ -1,0 +1,9 @@
+PRETTY_NAME="SysLinuxOS 13 (tirreno)"
+NAME="SysLinuxOS for System Integrators"
+VERSION_ID="13"
+VERSION="13 (tirreno)"
+VERSION_CODENAME=tirreno
+ID=SysLinuxOS
+HOME_URL="https://syslinuxos.com/"
+SUPPORT_URL="https://syslinuxos.com/community"
+BUG_REPORT_URL="https://syslinuxos.com/community"

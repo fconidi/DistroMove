@@ -1,0 +1,12 @@
+# /etc/crypttab: mappings for encrypted partitions.
+#
+# Each mapped device will be created in /dev/mapper, so your /etc/fstab
+# should use the /dev/mapper/<name> paths for encrypted devices.
+#
+# See crypttab(5) for the supported syntax.
+#
+# <name>               <device>                         <password> <options>
+luks-5f3e2d1c-0b9a-4876-a543-210fedcba987 UUID=5f3e2d1c-0b9a-4876-a543-210fedcba987 /crypto_keyfile.bin luks,discard,keyscript=/bin/cat
+luks-6b5a4f3e-2d1c-4b0a-9f8e-7d6c5b4a3f2e UUID=6b5a4f3e-2d1c-4b0a-9f8e-7d6c5b4a3f2e /etc/cryptsetup-keys.d/home.key luks,discard
+luks-7c6b5a4f-3e2d-4c1b-a0f9-8e7d6c5b4a3f UUID=7c6b5a4f-3e2d-4c1b-a0f9-8e7d6c5b4a3f /crypto_keyfile.bin luks
+cswap2 PARTUUID=4d5e6f7a-8b9c-4d3e-9f4a-5b6c7d8e9fa0 /dev/urandom swap,cipher=aes-xts-plain64,size=512

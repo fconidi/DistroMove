@@ -1,0 +1,5 @@
+ID 256 gen 23145 top level 5 path @
+ID 258 gen 23140 top level 256 path @/.snapshots
+ID 259 gen 23001 top level 258 path @/.snapshots/1/snapshot
+ID 262 gen 23120 top level 258 path @/.snapshots/2/snapshot
+ID 263 gen 22950 top level 256 path @/var/lib/portables

@@ -1,0 +1,164 @@
+Package: base-files
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 340
+Maintainer: Debian base-files maintainers <base-files@packages.debian.org>
+Architecture: amd64
+Version: 13.8+deb13u1
+Description: Debian base system miscellaneous files
+ This package contains the basic filesystem hierarchy of a Debian system.
+
+Package: dpkg
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 6625
+Maintainer: Dpkg Developers <debian-dpkg@lists.debian.org>
+Architecture: amd64
+Version: 1.22.21
+Description: Debian package management system
+ This package provides the low-level infrastructure for handling the
+ installation and removal of Debian software packages.
+
+Package: e2fsprogs
+Status: install ok installed
+Priority: required
+Section: admin
+Installed-Size: 1529
+Maintainer: Debian e2fsprogs maintainers <e2fsprogs@packages.debian.org>
+Architecture: amd64
+Version: 1.47.2-3+b3
+Description: ext2/ext3/ext4 file system utilities
+ The ext2, ext3 and ext4 file systems are successors of the original ext
+ ("extended") file system.
+
+Package: initramfs-tools
+Status: install ok installed
+Priority: optional
+Section: utils
+Installed-Size: 52
+Maintainer: Debian kernel team <debian-kernel@lists.debian.org>
+Architecture: all
+Version: 0.148.3
+Description: generic modular initramfs generator (automation)
+ This package builds a bootable initramfs for Linux kernel packages.
+
+Package: initramfs-tools-core
+Status: install ok installed
+Priority: optional
+Section: utils
+Installed-Size: 438
+Maintainer: Debian kernel team <debian-kernel@lists.debian.org>
+Architecture: all
+Version: 0.148.3
+Description: generic modular initramfs generator (core tools)
+ This package contains the mkinitramfs program that can be used to
+ create a bootable initramfs for a Linux kernel.
+
+Package: linux-image-amd64
+Status: install ok installed
+Priority: optional
+Section: kernel
+Installed-Size: 13
+Maintainer: Debian kernel team <debian-kernel@lists.debian.org>
+Architecture: amd64
+Version: 6.12.48-1
+Description: Linux for 64-bit PCs (meta-package)
+ This package depends on the latest Linux kernel and modules for use on
+ PCs with AMD64, Intel 64 or VIA Nano processors.
+
+Package: grub-efi-amd64
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 416
+Maintainer: GRUB Maintainers <pkg-grub-devel@alioth-lists.debian.net>
+Architecture: amd64
+Version: 2.12-9
+Description: GRand Unified Bootloader, version 2 (EFI-AMD64 version)
+ GRUB is a portable, powerful bootloader.
+
+Package: grub-efi-amd64-signed
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 9492
+Maintainer: GRUB Maintainers <pkg-grub-devel@alioth-lists.debian.net>
+Architecture: amd64
+Version: 1+2.12+9
+Description: GRand Unified Bootloader, version 2 (amd64 UEFI signed by Debian)
+ GRUB is a portable, powerful bootloader.
+
+Package: shim-signed
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 3311
+Maintainer: Debian EFI team <debian-efi@lists.debian.org>
+Architecture: amd64
+Version: 1.47+15.8-1
+Description: Secure Boot chain-loading bootloader (Microsoft-signed binary)
+ This package provides a minimalist boot loader which allows verifying
+ signatures of other UEFI binaries against either the Secure Boot DB/DBX or
+ against a built-in signature database.
+
+Package: efibootmgr
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 95
+Maintainer: Debian EFI team <debian-efi@lists.debian.org>
+Architecture: amd64
+Version: 18-2
+Description: Interact with the EFI Boot Manager
+ This is a Linux user-space application to modify the Intel Extensible
+ Firmware Interface (EFI) Boot Manager.
+
+Package: mokutil
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 103
+Maintainer: Debian EFI team <debian-efi@lists.debian.org>
+Architecture: amd64
+Version: 0.7.2-1
+Description: tools for manipulating machine owner keys
+ This program provides the means to enroll and erase the machine owner keys.
+
+Package: btrfs-progs
+Status: install ok installed
+Priority: optional
+Section: admin
+Installed-Size: 5622
+Maintainer: Debian Btrfs maintainers <btrfs-progs@packages.debian.org>
+Architecture: amd64
+Version: 6.14-1
+Description: Checksumming Copy on Write Filesystem utilities
+ Btrfs is a copy-on-write filesystem for Linux aimed at implementing
+ advanced features while focusing on fault tolerance, repair and easy
+ administration.
+
+Package: rsync
+Status: install ok installed
+Priority: optional
+Section: net
+Installed-Size: 830
+Maintainer: Debian rsync maintainers <rsync@packages.debian.org>
+Architecture: amd64
+Version: 3.4.1+ds1-5
+Description: fast, versatile, remote (and local) file-copying tool
+ rsync is a fast and versatile file-copying tool which can copy locally
+ and to/from a remote host.
+
+Package: postgresql-17
+Status: install ok installed
+Priority: optional
+Section: database
+Installed-Size: 19224
+Maintainer: Debian PostgreSQL Maintainers <team+postgresql@tracker.debian.org>
+Architecture: amd64
+Version: 17.6-0+deb13u1
+Description: The World's Most Advanced Open Source Relational Database
+ PostgreSQL is a fully featured object-relational database management
+ system.

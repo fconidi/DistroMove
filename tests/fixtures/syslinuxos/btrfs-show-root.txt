@@ -1,0 +1,4 @@
+Label: none  uuid: 8a7b6c5d-4e3f-4a1b-9c0d-e1f2a3b4c5d6
+	Total devices 1 FS bytes used 21.37GiB
+	devid    1 size 299.98GiB used 25.02GiB path /dev/mapper/luks-5f3e2d1c-0b9a-4876-a543-210fedcba987
+

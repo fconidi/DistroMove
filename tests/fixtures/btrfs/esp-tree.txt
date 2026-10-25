@@ -1,0 +1,11 @@
+EFI/BOOT/BOOTX64.EFI
+EFI/BOOT/fbx64.efi
+EFI/BOOT/mmx64.efi
+EFI/debian/shimx64.efi
+EFI/debian/grubx64.efi
+EFI/debian/mmx64.efi
+EFI/debian/BOOTX64.CSV
+EFI/debian/grub.cfg
+EFI/Microsoft/Boot/bootmgfw.efi
+EFI/Microsoft/Boot/BCD
+EFI/Microsoft/Recovery/BCD
