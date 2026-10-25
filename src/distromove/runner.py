@@ -44,7 +44,8 @@ class Runner:
 
     def run(self, argv: list[str], *, check: bool = True, input: Optional[bytes] = None,
             secret_input: bool = False, cwd: Optional[str] = None,
-            readonly: bool = False) -> "subprocess.CompletedProcess[str]":
+            readonly: bool = False,
+            encoding_errors: str = "replace") -> "subprocess.CompletedProcess[str]":
         argv = [str(a) for a in argv]
         self.calls.append(list(argv))
         line = shlex.join(argv)
@@ -69,7 +70,7 @@ class Runner:
         except OSError as exc:
             raise RunnerError(_scrub(f"cannot run {shlex.join(argv)}: {exc.strerror or exc}", secret),
                               argv) from None
-        out = proc.stdout.decode("utf-8", errors="replace")
+        out = proc.stdout.decode("utf-8", errors=encoding_errors)
         err = proc.stderr.decode("utf-8", errors="replace")
         if secret is not None:
             out, err = _scrub(out, secret), _scrub(err, secret)

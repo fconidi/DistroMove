@@ -41,7 +41,7 @@ def _normalise(rel: str) -> str | None:
     return None if s in ("", ".") else s
 
 
-def _walk(root: str, root_dev: int) -> dict[str, os.stat_result]:
+def _walk(root: str, root_dev: int, excludes: tuple[str, ...] = ()) -> dict[str, os.stat_result]:
     found: dict[str, os.stat_result] = {}
     stack = [""]
     while stack:
@@ -58,6 +58,8 @@ def _walk(root: str, root_dev: int) -> dict[str, os.stat_result]:
             os.close(fd)
         for name in names:
             child = f"{rel}/{name}" if rel else name
+            if any(child == excluded or child.startswith(excluded + "/") for excluded in excludes):
+                continue
             try:
                 st = os.lstat(os.path.join(full, name))
             except FileNotFoundError:
@@ -125,7 +127,8 @@ def _hash_link(path: str) -> str | None:
 
 def build_manifest(root: Path | str, hash_paths: tuple[str, ...] = ("etc", "boot"),
                    sample: int = 200, files_from: list[str] | None = None,
-                   kind: ManifestKind = "ext4-frozen") -> Manifest:
+                   kind: ManifestKind = "ext4-frozen",
+                   exclude_paths: tuple[str, ...] = ()) -> Manifest:
     """Describe the tree at ``root``.
 
     Every entry records size, mtime (ns), mode, uid and gid. Contents are hashed (SHA-256)
@@ -143,10 +146,13 @@ def build_manifest(root: Path | str, hash_paths: tuple[str, ...] = ("etc", "boot
     if not stat.S_ISDIR(root_st.st_mode):
         raise ValueError(f"not a directory: {root_s}")
 
+    excludes = tuple(p for item in exclude_paths if (p := _normalise(item)) is not None)
     if files_from is None:
-        found = _walk(root_s, root_st.st_dev)
+        found = _walk(root_s, root_st.st_dev, excludes)
     else:
         found = _listed(root_s, root_st.st_dev, files_from)
+        found = {rel: st for rel, st in found.items()
+                 if not any(rel == p or rel.startswith(p + "/") for p in excludes)}
 
     prefixes = [_normalise(p) for p in hash_paths]
     to_hash = {rel for rel, st in found.items()
