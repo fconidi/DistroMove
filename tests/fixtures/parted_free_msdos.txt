@@ -1,0 +1,5 @@
+BYT;
+/dev/sdc:234441648s:scsi:512:512:msdos:Invented Disk:;
+1:32s:2047s:2016s:free;
+1:2048s:2099199s:2097152s:primary:fat32::boot;
+2:2099200s:234441647s:232342448s:primary:ext4::;

@@ -1,0 +1,5 @@
+BYT;
+/dev/sde:419430400s:scsi:512:512:gpt:Invented Disk:;
+1:34s:2047s:2014s:free;
+1:2048s:1050623s:1048576s:fat32:EFI System Partition:boot, esp;
+2:1050624s:419430366s:418379743s:ext4:root:;

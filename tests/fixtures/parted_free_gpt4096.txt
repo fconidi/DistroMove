@@ -1,0 +1,6 @@
+BYT;
+/dev/nvme1n1:244190646s:nvme:4096:4096:gpt:Invented NVMe:;
+1:6s:255s:250s:free;
+1:256s:262399s:262144s:fat32:EFI System Partition:boot, esp;
+2:262400s:104857599s:104595200s:ext4:root:;
+1:104857600s:244190640s:139333041s:free;

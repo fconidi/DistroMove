@@ -1,0 +1,2 @@
+BYT;
+/dev/sdd:488397168s:scsi:512:4096:unknown:Invented Disk:;
