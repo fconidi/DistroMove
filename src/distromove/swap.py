@@ -207,8 +207,13 @@ def resume_target(swaps: list[SwapResult], original_resume: str | None) -> Resum
         return None
     elif original_resume.upper().startswith("UUID="):
         old_uuid = original_resume[5:]
-        matches = [swap for swap in swaps if swap.source_uuid and
-                   swap.source_uuid.casefold() == old_uuid.casefold()]
+        matches = [swap for swap in swaps if
+                   (swap.source_uuid and swap.source_uuid.casefold() == old_uuid.casefold())
+                   or (swap.kind == "partition" and swap.uuid and
+                       swap.uuid.casefold() == old_uuid.casefold())
+                   or (swap.kind == "file" and swap.source_resume and
+                       swap.containing_device_uuid and
+                       swap.containing_device_uuid.casefold() == old_uuid.casefold())]
     else:
         matches = [swap for swap in swaps if swap.source_path == original_resume]
     if not matches and original_resume is None:
