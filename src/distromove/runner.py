@@ -1,7 +1,9 @@
 """Single entry point for every external command (and so every side effect)."""
 from __future__ import annotations
 
+import os
 import shlex
+import signal
 import subprocess
 from typing import Callable, Optional
 
@@ -45,7 +47,9 @@ class Runner:
     def run(self, argv: list[str], *, check: bool = True, input: Optional[bytes] = None,
             secret_input: bool = False, cwd: Optional[str] = None,
             readonly: bool = False,
-            encoding_errors: str = "replace") -> "subprocess.CompletedProcess[str]":
+            encoding_errors: str = "replace",
+            periodic_check: Optional[Callable[[], None]] = None,
+            check_interval: float = 1.0) -> "subprocess.CompletedProcess[str]":
         argv = [str(a) for a in argv]
         self.calls.append(list(argv))
         line = shlex.join(argv)
@@ -64,9 +68,32 @@ class Runner:
         if secret_input and input:
             secret = input.decode("utf-8", errors="replace")
         try:
-            proc = subprocess.run(
-                argv, input=input, cwd=cwd, capture_output=True, check=False,
-                stdin=subprocess.DEVNULL if input is None else None)
+            if periodic_check is None:
+                proc = subprocess.run(
+                    argv, input=input, cwd=cwd, capture_output=True, check=False,
+                    stdin=subprocess.DEVNULL if input is None else None)
+            else:
+                if input is not None or check_interval <= 0:
+                    raise ValueError("periodic command checks need no stdin and a positive interval")
+                child = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         start_new_session=True)
+                try:
+                    while True:
+                        try:
+                            out_bytes, err_bytes = child.communicate(timeout=check_interval)
+                            break
+                        except subprocess.TimeoutExpired:
+                            periodic_check()
+                    periodic_check()
+                except BaseException:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    child.communicate()
+                    raise
+                proc = subprocess.CompletedProcess(argv, child.returncode, out_bytes, err_bytes)
         except OSError as exc:
             raise RunnerError(_scrub(f"cannot run {shlex.join(argv)}: {exc.strerror or exc}", secret),
                               argv) from None

@@ -16,7 +16,7 @@ INTERFACE = {
                "only_swapfile"),
     "BtrfsInfo": ("fs_uuid", "default_subvol_id", "subvolumes"),
     "MountInfo": ("source", "target", "fstype", "options"),
-    "SnapshotRef": ("fs_uuid", "subvol_path", "snapshot_path", "owner_op"),
+    "SnapshotRef": ("fs_uuid", "subvol_path", "snapshot_path", "owner_op", "exclude_paths"),
     "Volume": ("volume_id", "role", "mountpoint", "partition", "luks", "fs", "fs_uuid",
                "used_bytes", "apparent_bytes", "used_inodes", "btrfs", "boot_inside_luks"),
     "SwapRef": ("volume_id", "kind", "path", "containing_volume_role", "uuid", "size_bytes",
@@ -39,7 +39,8 @@ INTERFACE = {
 
 # The only fields with a default: trailing optional fields (``| None``, empty, false).
 DEFAULTS = {("LuksInfo", "keyfile"): None, ("LuksInfo", "crypttab_options"): (),
-            ("SwapRef", "resume"): False, ("ManifestEntry", "sha256"): None}
+            ("SwapRef", "resume"): False, ("ManifestEntry", "sha256"): None,
+            ("SnapshotRef", "exclude_paths"): ()}
 
 
 @pytest.mark.parametrize("name", sorted(INTERFACE))

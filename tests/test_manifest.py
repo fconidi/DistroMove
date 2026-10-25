@@ -1,6 +1,7 @@
 import hashlib
 import os
 import stat
+import time
 from datetime import datetime
 
 import pytest
@@ -109,3 +110,16 @@ def test_build_manifest_does_not_change_the_source(tmp_path):
         now = os.lstat(root / p)
         assert (now.st_mtime_ns, now.st_ctime_ns, now.st_size) == (
             st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+
+def test_live_reference_omits_stable_file_beneath_changed_directory(tmp_path):
+    root = tmp_path / "root"
+    child = root / "directory"
+    child.mkdir(parents=True)
+    (child / "old").write_text("unchanged")
+    cutoff = time.time()
+    time.sleep(0.01)
+    (child / "new").write_text("changed directory")
+    manifest = build_manifest(root, kind="btrfs-live", ctime_before=cutoff)
+    assert "directory" not in manifest.entries
+    assert "directory/old" not in manifest.entries

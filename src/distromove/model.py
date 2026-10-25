@@ -89,6 +89,7 @@ class SnapshotRef:
     subvol_path: str
     snapshot_path: str
     owner_op: str
+    exclude_paths: tuple[str, ...] = ()  # other subvolumes nested beneath this snapshot
 
 
 @dataclass(frozen=True)

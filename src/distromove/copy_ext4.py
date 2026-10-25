@@ -102,7 +102,7 @@ def volume_filters(volume_root: Path | str, mounts: list[MountInfo | str | Path]
 
 def _verify_destination_mount(r: Runner, pair: CopyPair) -> None:
     target = str(Path(pair.destination).resolve(strict=True))
-    proc = r.run(["findmnt", "--json", "--mountpoint", target,
+    proc = r.run(["findmnt", "--json", "--nofsroot", "--mountpoint", target,
                   "--output", "TARGET,SOURCE,FSTYPE"], readonly=True)
     try:
         rows = json.loads(proc.stdout)["filesystems"]

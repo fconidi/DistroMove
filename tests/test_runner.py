@@ -1,4 +1,5 @@
 import sys
+import time
 
 import pytest
 
@@ -87,3 +88,16 @@ def test_no_input_means_stdin_is_devnull_not_inherited():
             child.kill()
             child.wait()
         child.stdin.close()
+
+
+def test_periodic_check_stops_a_running_command():
+    called = []
+
+    def low_space():
+        called.append(True)
+        raise RuntimeError("source space low")
+
+    began = time.monotonic()
+    with pytest.raises(RuntimeError, match="source space low"):
+        Runner().run(["sleep", "2"], periodic_check=low_space, check_interval=0.05)
+    assert called and time.monotonic() - began < 1.0

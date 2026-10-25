@@ -41,7 +41,8 @@ def _normalise(rel: str) -> str | None:
     return None if s in ("", ".") else s
 
 
-def _walk(root: str, root_dev: int, excludes: tuple[str, ...] = ()) -> dict[str, os.stat_result]:
+def _walk(root: str, root_dev: int, excludes: tuple[str, ...] = (),
+          exclude_names: tuple[str, ...] = ()) -> dict[str, os.stat_result]:
     found: dict[str, os.stat_result] = {}
     stack = [""]
     while stack:
@@ -58,7 +59,8 @@ def _walk(root: str, root_dev: int, excludes: tuple[str, ...] = ()) -> dict[str,
             os.close(fd)
         for name in names:
             child = f"{rel}/{name}" if rel else name
-            if any(child == excluded or child.startswith(excluded + "/") for excluded in excludes):
+            if name in exclude_names or any(child == excluded or child.startswith(excluded + "/")
+                                            for excluded in excludes):
                 continue
             try:
                 st = os.lstat(os.path.join(full, name))
@@ -128,7 +130,9 @@ def _hash_link(path: str) -> str | None:
 def build_manifest(root: Path | str, hash_paths: tuple[str, ...] = ("etc", "boot"),
                    sample: int = 200, files_from: list[str] | None = None,
                    kind: ManifestKind = "ext4-frozen",
-                   exclude_paths: tuple[str, ...] = ()) -> Manifest:
+                   exclude_paths: tuple[str, ...] = (),
+                   exclude_names: tuple[str, ...] = (),
+                   ctime_before: float | None = None) -> Manifest:
     """Describe the tree at ``root``.
 
     Every entry records size, mtime (ns), mode, uid and gid. Contents are hashed (SHA-256)
@@ -148,11 +152,16 @@ def build_manifest(root: Path | str, hash_paths: tuple[str, ...] = ("etc", "boot
 
     excludes = tuple(p for item in exclude_paths if (p := _normalise(item)) is not None)
     if files_from is None:
-        found = _walk(root_s, root_st.st_dev, excludes)
+        found = _walk(root_s, root_st.st_dev, excludes, exclude_names)
     else:
         found = _listed(root_s, root_st.st_dev, files_from)
         found = {rel: st for rel, st in found.items()
                  if not any(rel == p or rel.startswith(p + "/") for p in excludes)}
+        found = {rel: st for rel, st in found.items()
+                 if not any(component in exclude_names for component in rel.split("/"))}
+    if ctime_before is not None:
+        cutoff = int(ctime_before * 1_000_000_000)
+        found = {rel: st for rel, st in found.items() if st.st_ctime_ns < cutoff}
 
     prefixes = [_normalise(p) for p in hash_paths]
     to_hash = {rel for rel, st in found.items()
@@ -170,8 +179,19 @@ def build_manifest(root: Path | str, hash_paths: tuple[str, ...] = ("etc", "boot
         if rel in to_hash:
             full = os.path.join(root_s, rel)
             digest = _hash_file(full) if is_reg else _hash_link(full)
+        if ctime_before is not None:
+            try:
+                latest = os.lstat(os.path.join(root_s, rel))
+            except FileNotFoundError:
+                continue
+            if latest.st_ctime_ns != st.st_ctime_ns or latest.st_ctime_ns >= cutoff:
+                continue
         entries[rel] = ManifestEntry(
             size=st.st_size if (is_reg or is_lnk) else 0,
             mtime=st.st_mtime_ns, mode=st.st_mode, uid=st.st_uid, gid=st.st_gid,
             sha256=digest)
+    if ctime_before is not None:
+        entries = {rel: entry for rel, entry in entries.items()
+                   if all(str(parent) in entries for parent in PurePosixPath(rel).parents
+                          if str(parent) != ".")}
     return Manifest(entries=entries, taken_at=taken_at, kind=kind)
