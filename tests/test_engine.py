@@ -120,6 +120,8 @@ def test_verify_failure_stops_before_pending(tmp_path):
     assert not result.ok and result.verify and not result.verify.ok
     assert "pending_activation" not in backend.calls
     assert "register_entry" not in backend.calls
+    assert {"phase": "verify_findings", "findings": [
+        {"severity": "error", "check": "copy", "detail": "bad"}]} in events
 
 
 def test_registration_failure_keeps_pending_state(tmp_path):

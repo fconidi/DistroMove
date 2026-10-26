@@ -655,6 +655,9 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
         _event(emit, phase)
         report = backend.verify(source, secrets, r)
         if not report.ok:
+            _event(emit, "verify_findings",
+                   findings=[{"severity": item.severity, "check": item.check,
+                              "detail": item.detail} for item in report.findings])
             raise RuntimeError("final verification failed")
         phase = "release_snapshots"
         _event(emit, phase)
