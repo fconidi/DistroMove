@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from distromove.copy_ext4 import (RSYNC_ARGS, CopyPair, FreezeFailed, FreezeGroup,
+from distromove.copy_ext4 import (RSYNC_ARGS, CopyPair, FreezeFailed, FreezeGroup, FreezeStats,
                                   FreezeTooLong, PassStats, _probe_thawed, _watchdog_loop,
                                   _verify_destination_mount,
                                   changed_since, checksum_candidates_pass, copy_ext4,
@@ -17,7 +17,7 @@ from distromove.copy_ext4 import (RSYNC_ARGS, CopyPair, FreezeFailed, FreezeGrou
 from distromove.journal import Journal, read_journal
 from distromove.manifest import build_manifest
 from distromove.model import MountInfo
-from distromove.runner import Runner
+from distromove.runner import Runner, RunnerError
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +50,67 @@ class ActiveGroup:
 
 def test_rsync_args_exact():
     assert RSYNC_ARGS == ["-aAXHS", "--numeric-ids", "--one-file-system"]
+
+
+def test_hot_pass_continues_after_vanished_source_file(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+    stats = "Number of regular files transferred: 2\n"
+
+    def vanished(*_args, **_kwargs):
+        raise RunnerError("source file vanished", ["rsync"], 24, stats, "file has vanished")
+
+    monkeypatch.setattr(module, "_rsync", vanished)
+    result = hot_pass(Runner(), pair.source, pair.destination, [])
+    assert result.files == 2 and result.vanished_source_files
+
+
+def test_hot_pass_rejects_partial_transfer_error(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+
+    def partial(*_args, **_kwargs):
+        raise RunnerError("partial transfer", ["rsync"], 23,
+                          "Number of regular files transferred: 2\n", "file has vanished")
+
+    monkeypatch.setattr(module, "_rsync", partial)
+    with pytest.raises(RunnerError) as caught:
+        hot_pass(Runner(), pair.source, pair.destination, [])
+    assert caught.value.returncode == 23
+
+
+def test_frozen_reconcile_rejects_vanished_source_file(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+
+    def vanished(*_args, **_kwargs):
+        raise RunnerError("source file vanished", ["rsync"], 24)
+
+    monkeypatch.setattr(module, "_rsync", vanished)
+    with pytest.raises(RunnerError) as caught:
+        reconcile_pass(Runner(), [pair], ActiveGroup(None))
+    assert caught.value.returncode == 24
+
+
+@pytest.mark.parametrize("returncode", [23, 24])
+@pytest.mark.parametrize("rsync_call", [1, 2])
+def test_frozen_checksum_and_metadata_pass_reject_partial_copy(
+        tmp_path, monkeypatch, returncode, rsync_call):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+    monkeypatch.setattr(module, "changed_since", lambda *_args: ["changed"])
+    calls = []
+
+    def rsync(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == rsync_call:
+            raise RunnerError("partial copy", ["rsync"], returncode)
+        return ""
+
+    monkeypatch.setattr(module, "_rsync", rsync)
+    with pytest.raises(RunnerError) as caught:
+        checksum_candidates_pass(Runner(), [pair], ActiveGroup(None), time.time() - 1)
+    assert caught.value.returncode == returncode
 
 
 def test_filters_per_volume_docker_data_kept_old_swapfile_excluded(tmp_path):
@@ -324,6 +385,20 @@ def test_convergence_until_under_threshold(tmp_path, monkeypatch):
     r = FreezeRunner(j)
     assert copy_ext4(r, [pair], j, threshold_s=20.0) == "finished"
     assert len(called) == 2
+
+
+def test_vanished_hot_pass_is_reported_after_a_later_clean_round(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+    j = Journal(tmp_path / "journal", host_root_uuid="host-root")
+    mount_journal(j, pair)
+    passes = iter((PassStats(25.0, 1, time.time(), True),
+                   PassStats(1.0, 1, time.time())))
+    monkeypatch.setattr(module, "hot_pass", lambda *args: next(passes))
+    monkeypatch.setattr(module, "_probe_thawed", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "final_pass", lambda *args: FreezeStats(1.0, 0, object(), {}))
+    result = copy_ext4(FreezeRunner(j), [pair], j, threshold_s=20.0)
+    assert result.vanished_hot_passes == 1
 
 
 def test_FreezeTooLong_after_max_rounds(tmp_path, monkeypatch):

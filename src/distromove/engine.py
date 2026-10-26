@@ -640,6 +640,8 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
         phase = "copy"
         _event(emit, phase)
         freeze = backend.copy(source, r, journal)
+        if freeze is not None and freeze.vanished_hot_passes:
+            _event(emit, "copy_hot_vanished", passes=freeze.vanished_hot_passes)
         phase = "make_swaps"
         _event(emit, phase)
         backend.make_swaps(source, secrets, r, journal)

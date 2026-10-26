@@ -92,6 +92,17 @@ def test_order_and_durable_activation(tmp_path):
     assert not journal.is_current()
 
 
+def test_vanished_hot_pass_emits_event_after_copy_completes(tmp_path):
+    class VanishedBackend(Backend):
+        def copy(self, *args):
+            super().copy(*args)
+            return SimpleNamespace(seconds=0.5, vanished_hot_passes=1)
+
+    result, events, _ = execute(tmp_path, VanishedBackend(tmp_path / "new"))
+    assert result.ok
+    assert {"phase": "copy_hot_vanished", "passes": 1} in events
+
+
 @pytest.mark.parametrize("step", ["preflight", "create_storage", "copy", "make_swaps",
     "configure", "install_boot", "verify", "release_snapshots", "pending_activation"])
 def test_pre_pending_failure_unwinds_without_firmware(tmp_path, step):

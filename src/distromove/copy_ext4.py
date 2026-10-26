@@ -1,7 +1,7 @@
 """Copy live ext4 volumes, then reconcile them under a bounded coordinated freeze."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -15,7 +15,7 @@ from typing import Callable
 from .journal import Journal, read_journal
 from .manifest import build_manifest
 from .model import Manifest, MountInfo
-from .runner import Runner
+from .runner import Runner, RunnerError
 
 
 RSYNC_ARGS = ["-aAXHS", "--numeric-ids", "--one-file-system"]
@@ -43,6 +43,7 @@ class PassStats:
     seconds: float
     files: int
     started_at: float
+    vanished_source_files: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class FreezeStats:
     changed_files: int
     manifest: Manifest
     manifests: dict[str, Manifest]
+    vanished_hot_passes: int = 0
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -173,11 +175,21 @@ def hot_pass(r: Runner, src: Path | str, dst: Path | str, filters: list[str],
     _check_pairs([pair])
     started_at = time.time()
     began = time.monotonic()
-    out = _rsync(r, pair, ["--stats"])
+    try:
+        out = _rsync(r, pair, ["--stats"])
+        vanished = False
+    except RunnerError as exc:
+        if exc.returncode != 24:
+            raise
+        # A live source may rename a file while rsync scans it. The frozen
+        # reconciliation and verification must still complete without errors.
+        out = exc.stdout
+        vanished = True
     match = re.search(r"^Number of regular files transferred:\s*([\d,]+)", out, re.M)
     if not match:
         raise ValueError("rsync did not report the transfer count")
-    stats = PassStats(time.monotonic() - began, int(match.group(1).replace(",", "")), started_at)
+    stats = PassStats(time.monotonic() - began, int(match.group(1).replace(",", "")),
+                      started_at, vanished)
     if on_progress is not None:
         on_progress(stats)
     return stats
@@ -412,8 +424,10 @@ def copy_ext4(r: Runner, pairs: list[CopyPair], journal: Journal,
     if threshold_s <= 0 or max_rounds < 1:
         raise ValueError("invalid convergence limit")
     began = None
+    vanished_hot_passes = 0
     for _ in range(max_rounds):
         results = [hot_pass(r, p.source, p.destination, list(p.filters), on_progress) for p in pairs]
+        vanished_hot_passes += sum(item.vanished_source_files for item in results)
         began = results[0].started_at if began is None else began
         if sum(item.seconds for item in results) <= threshold_s:
             break
@@ -422,4 +436,5 @@ def copy_ext4(r: Runner, pairs: list[CopyPair], journal: Journal,
     group = FreezeGroup(r, [p.mountpoint for p in pairs], journal, threshold_s)
     with group:
         result = final_pass(r, pairs, group, began)
-    return result
+    return (replace(result, vanished_hot_passes=vanished_hot_passes)
+            if vanished_hot_passes else result)
