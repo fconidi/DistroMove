@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>SysLinuxOS</vendor>
+  <action id="org.syslinuxos.distromove.run">
+    <description>Run the DistroMove privileged helper</description>
+    <description xml:lang="it">Esegui l'helper privilegiato di DistroMove</description>
+    <description xml:lang="fr">Exécuter l'assistant privilégié de DistroMove</description>
+    <description xml:lang="de">Den privilegierten DistroMove-Helfer ausführen</description>
+    <description xml:lang="es">Ejecutar el asistente privilegiado de DistroMove</description>
+    <message>Authentication is required to manage disks and boot entries with DistroMove</message>
+    <message xml:lang="it">È richiesta l'autenticazione per gestire dischi e voci di avvio con DistroMove</message>
+    <message xml:lang="fr">Une authentification est requise pour gérer les disques et les entrées de démarrage avec DistroMove</message>
+    <message xml:lang="de">Zur Verwaltung von Datenträgern und Starteinträgen mit DistroMove ist eine Authentifizierung erforderlich</message>
+    <message xml:lang="es">Se requiere autenticación para gestionar discos y entradas de arranque con DistroMove</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/distromove/helper</annotate>
+  </action>
+</policyconfig>

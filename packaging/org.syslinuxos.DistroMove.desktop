@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=DistroMove
+Comment=Migrate the running system to new partitions
+Comment[it]=Migra il sistema in uso su nuove partizioni
+Comment[fr]=Migrer le système actif vers de nouvelles partitions
+Comment[de]=Das laufende System auf neue Partitionen migrieren
+Comment[es]=Migrar el sistema en uso a particiones nuevas
+Exec=distromove
+Icon=drive-harddisk
+Terminal=false
+Categories=System;X-SysLinuxOS-Tools;
+StartupNotify=true
+Keywords=migration;disk;partition;system;
