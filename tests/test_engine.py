@@ -130,6 +130,19 @@ def test_second_instance_is_refused_without_unwind(tmp_path):
     assert not result.ok and backend.calls == []
 
 
+def test_preheld_lock_stays_held_through_migration(tmp_path):
+    backend = Backend(tmp_path / "new")
+    lock = Lock(tmp_path / "lock")
+    journal = Journal(tmp_path / "journal", "test-preheld", host_root_uuid="old-root")
+    with lock:
+        result = run_migration(MigrationPlan([], EspChoice("reuse", "/dev/mock", 0), [], []),
+                               object(), Secrets(), object(), lambda event: None,
+                               journal, lock, backend=backend)
+        assert result.ok
+        assert lock._fd is not None
+    assert lock._fd is None
+
+
 def test_gpt_initialisation_only_when_planned(tmp_path):
     backend = Backend(tmp_path / "new")
     plan = MigrationPlan([], EspChoice("reuse", "/dev/mock", 0), [], [],

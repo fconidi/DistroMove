@@ -616,8 +616,10 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
     report = None
     bootnum = None
     warnings: list[str] = []
+    owns_lock = lock._fd is None
     try:
-        lock.__enter__()
+        if owns_lock:
+            lock.__enter__()
     except AlreadyRunning:
         _event(emit, "error", failed_phase="lock", error="AlreadyRunning")
         return MigrationResult(False, None, None, None, ["AlreadyRunning"], "lock")
@@ -698,7 +700,8 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
                 warnings.append(type(cleanup_exc).__name__)
         return MigrationResult(False, report, None, freeze, warnings, phase)
     finally:
-        lock.__exit__(None, None, None)
+        if owns_lock:
+            lock.__exit__(None, None, None)
 
 
 def reconcile_on_start(r, journal: Journal, *, state_root: Path | None = None) -> list[Action]:
@@ -810,9 +813,10 @@ def reconcile_on_start(r, journal: Journal, *, state_root: Path | None = None) -
 def _release_journal_resources(r, journal: Journal, live, entries):
     """Unmount and close only still-present resources proven by journal identity."""
     intents = {e["op_id"]: e for e in entries if e["type"] == "intent"}
-    mounted = [intents[e["op_id"]] for e in entries if e["type"] == "outcome"
-               and e["outcome"] == "mounted" and e["op_id"] in intents
-               and intents[e["op_id"]]["op"] == "mount_destination"]
+    # A killed helper can leave a mount between the durable intent and its
+    # outcome. Identify it by the recorded path, device and filesystem UUID.
+    mounted = [e for e in entries if e["type"] == "intent"
+               and e["op"] == "mount_destination"]
     opened = [intents[e["op_id"]] for e in entries if e["type"] == "outcome"
               and e["outcome"] == "opened" and e["op_id"] in intents
               and intents[e["op_id"]]["op"] == "luks_open"]
