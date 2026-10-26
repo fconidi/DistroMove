@@ -445,3 +445,27 @@ def test_checksum_pass_leaves_directory_mtimes_equal_to_the_source(tmp_path):
         module._check_pairs = original
     assert (dst / "load" / "f1").read_bytes() == b"B" * 4096
     assert (dst / "load").stat().st_mtime_ns == (src / "load").stat().st_mtime_ns
+
+
+def test_final_pass_repairs_subsecond_directory_mtime_without_checksum_candidates(tmp_path):
+    from distromove.copy_ext4 import final_pass
+    from distromove.verify import verify_copy
+
+    pair = pair_in(tmp_path)
+    (pair.source / "load").mkdir()
+    (pair.source / "load" / "file").write_text("stable")
+    j = Journal(tmp_path / "journal", host_root_uuid="host-root")
+    mount_journal(j, pair)
+    r = Runner()
+    hot_pass(r, pair.source, pair.destination, [])
+    second = 1_700_000_000_000_000_000
+    os.utime(pair.source / "load", ns=(second, second + 123_456_789))
+    os.utime(pair.destination / "load", ns=(second, second + 789_123_456))
+    started_at = time.time()
+    group = ActiveGroup(j)
+    group.started_at = time.monotonic()
+
+    result = final_pass(r, [pair], group, started_at)
+
+    assert result.changed_files == 0
+    assert verify_copy(result.manifest, pair.destination, set()) == []

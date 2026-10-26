@@ -391,14 +391,13 @@ def checksum_candidates_pass(r: Runner, pairs: list[CopyPair], group: FreezeGrou
         payload = b"\0".join(os.fsencode(p) for p in paths) + b"\0"
         _rsync(r, pair, ["--checksum", "--from0", "--files-from=-"], input=payload)
         changed += len(paths)
-    if changed:
-        # Rewriting files replaces them by rename and so moves the mtime of their
-        # directories by less than the one-second window of the reconcile pass: compare
-        # times exactly once more, still frozen, in the already verified pairs.
-        # No --delete: the frozen source cannot have lost anything since reconcile_pass.
-        for pair in pairs:
-            group.ensure_active()
-            _rsync(r, pair, ["-@-1"])
+    # The default reconcile pass compares mtimes to the second. Directory
+    # mtimes can differ below that precision even when no checksum candidate
+    # was recopied. Compare exactly once more while the source is frozen.
+    # No --delete: the frozen source cannot have lost anything since reconcile_pass.
+    for pair in pairs:
+        group.ensure_active()
+        _rsync(r, pair, ["-@-1"])
     return changed
 
 
