@@ -54,6 +54,20 @@ def test_expected_diffs_not_copy_errors(tmp_path):
     assert verify_copy(reference, dst, {"etc/fstab"}) == []
 
 
+def test_top_level_holding_only_excluded_subvolumes_is_a_valid_empty_reference(tmp_path):
+    src, dst = tmp_path / "top", tmp_path / "copy"
+    (src / "@rootfs").mkdir(parents=True)
+    dst.mkdir()
+    reference = build_manifest(src, sample=0, exclude_paths=("@rootfs",))
+    assert not reference.entries
+    assert verify_copy(reference, dst, set(), exclude_paths=("@rootfs",)) == []
+    # anything the copy placed there is still reported
+    (dst / "stray").write_text("x")
+    assert errors(verify_copy(reference, dst, set(), exclude_paths=("@rootfs",)))
+    # without exclusions an empty reference is still refused
+    assert errors(verify_copy(reference, dst, set()))
+
+
 def test_child_mount_excluded_on_both_sides(tmp_path):
     src, dst = tree(tmp_path)
     (src / "boot/efi").mkdir()

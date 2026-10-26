@@ -52,7 +52,8 @@ def verify_copy(reference: Manifest, dst: Path,
     excluded = tuple(_relative(value) for value in exclude_paths)
     if any("/" in name or name in {"", ".", ".."} for name in exclude_names):
         raise ValueError("invalid excluded entry name")
-    if not reference.entries:
+    if not reference.entries and not exclude_paths:
+        # emptiness is only legitimate when every child was excluded (a top-level of subvolumes)
         return [_error("copy", "reference manifest is empty")]
     for path in reference.entries:
         _relative(path)
