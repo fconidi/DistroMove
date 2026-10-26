@@ -463,17 +463,32 @@ class SystemBackend:
                        # mkinitramfs builds in /var/tmp during the all-kernel initramfs update
                        "var/tmp"}
         for reference, destination, excludes, excluded_names in self._references.values():
+            prefix = _volume_prefix(self.new_root, destination)
+
+            def within(path: str) -> bool:
+                return not prefix or path.startswith(prefix + "/")
+
+            def local(path: str) -> str:
+                return path[len(prefix) + 1:] if prefix else path
+
+            def full(path: str) -> str:
+                return f"{prefix}/{path}" if prefix else path
+
             dynamic = {path for path in reference.entries
-                       if path.startswith("boot/initrd.img-") or
-                       path.startswith("var/lib/distromove/")}
-            dynamic.update(str(path.relative_to(destination)) for path in
-                           destination.glob("boot/initrd.img-*") if path.is_file())
-            findings.extend(verify_copy(reference, destination,
-                                        transformed | dynamic | self.context.expected_diffs,
+                       if full(path).startswith(("boot/initrd.img-", "var/lib/distromove/"))}
+            for pattern in ("initrd.img-*", "boot/initrd.img-*"):
+                dynamic.update(str(path.relative_to(destination))
+                               for path in destination.glob(pattern)
+                               if path.is_file() and full(str(path.relative_to(destination)))
+                               .startswith("boot/initrd.img-"))
+            expected = {local(path) for path in
+                        transformed | self.context.expected_diffs if within(path)} | dynamic
+            trees = tuple(local(path) for path in ("boot/grub", "var/lib/initramfs-tools")
+                          if within(path))
+            findings.extend(verify_copy(reference, destination, expected,
                                         exclude_paths=excludes,
                                         exclude_names=excluded_names,
-                                        expected_trees=("boot/grub",
-                                                        "var/lib/initramfs-tools")))
+                                        expected_trees=trees))
         mapping = self._uuid_map(source, self._journal)
         new_ids = set(mapping.fs.values()) | set(mapping.luks.values()) | set(mapping.swap_uuid.values())
         old_ids = set(mapping.fs) | set(mapping.luks) | set(mapping.swap_uuid)
@@ -585,6 +600,15 @@ class MigrationBackend(Protocol):
     def registration_details(self) -> tuple[str, int, str, str]: ...
     def close(self, r, journal: Journal) -> None: ...
     def unwind(self, r, journal: Journal) -> None: ...
+
+
+def _volume_prefix(new_root: Path, destination: Path) -> str:
+    """Where a copied volume sits inside the new root: "" for the root itself, "boot", ..."""
+    try:
+        relative = destination.relative_to(new_root).as_posix()
+    except ValueError:
+        return ""
+    return "" if relative == "." else relative
 
 
 def watch_source_space(r, source: Source) -> None:

@@ -519,3 +519,11 @@ def test_source_space_is_watched_only_where_snapshots_are_taken():
     runner.filesystems["/"] = (20 * gib, gib)
     with pytest.raises(SourceSpaceLow):
         engine.watch_source_space(runner, SimpleNamespace(volumes=[small_boot, btrfs_root]))
+
+
+def test_volume_prefix_places_a_separate_boot_volume_inside_the_new_root(tmp_path):
+    from distromove.engine import _volume_prefix
+    assert _volume_prefix(tmp_path, tmp_path) == ""
+    assert _volume_prefix(tmp_path, tmp_path / "boot") == "boot"
+    assert _volume_prefix(tmp_path, tmp_path / "var/lib.d") == "var/lib.d"
+    assert _volume_prefix(tmp_path, Path("/elsewhere/top/@")) == ""
