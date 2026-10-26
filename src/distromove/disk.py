@@ -123,7 +123,7 @@ def _table(r: Runner, disk: str) -> tuple[int, list[dict]]:
         if table["label"].lower() != "gpt" or table["device"] != disk:
             raise ValueError
         sector = int(table["sectorsize"])
-        rows = table["partitions"]
+        rows = table.get("partitions", [])
         if sector not in (512, 1024, 2048, 4096) or not isinstance(rows, list):
             raise ValueError
         if any(not isinstance(row, dict) or not row.get("node") or not row.get("uuid")

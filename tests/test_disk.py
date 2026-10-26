@@ -341,8 +341,9 @@ class InitRunner:
         elif argv[:2] == ["wipefs", "-J"]:
             out = json.dumps({"signatures": [{"type": "ext4"}] if self.signatures else []})
         elif argv[:2] == ["sfdisk", "--json"]:
+            # a table without partitions has no "partitions" key in real sfdisk output
             out = json.dumps({"partitiontable": {"label": "gpt", "device": DISK,
-                                                 "sectorsize": 512, "partitions": []}})
+                                                 "sectorsize": 512, "firstlba": 2048}})
         elif argv[:2] == ["sfdisk", "--lock"]:
             assert input == b"label: gpt\n" and not readonly
             self.written = True
