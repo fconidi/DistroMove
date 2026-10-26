@@ -765,3 +765,18 @@ def test_recover_never_reports_btrfs_snapshots(tmp_path):
     j.done(j.intend("snapshot", {"fs_uuid": FU["a"], "snapshot_path": "@distromove-m1"},
                     creates="snapshot"), "created")
     assert recover(jdir, snapshot([live_volume(PU["a"], fs_uuid=FU["a"])]), ROOT_UUID) == []
+
+
+@pytest.mark.xfail(strict=False, reason="recover() never matches a created partition whose "
+                   "planned fs_uuid cannot be read (closed LUKS container, no filesystem yet), "
+                   "so rollback of an encrypted destination ends in manual review")
+def test_recover_matches_created_partition_whose_planned_fs_uuid_is_unreadable(tmp_path):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    identity = dict(part_identity(PU["a"]), luks_uuid=LU["a"], fs_uuid=FU["a"])
+    j.done(j.intend("create_partition", identity, creates="partition", path="/dev/vdb2"),
+           "created")
+    # the container is closed again: only the LUKS UUID is readable, the inner fs is not
+    live = snapshot([live_volume(PU["a"], luks_uuid=LU["a"], fs_uuid=None)])
+    found = recover(jdir, live, ROOT_UUID)
+    assert [r.kind for r in found] == ["partition"]

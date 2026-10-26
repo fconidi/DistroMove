@@ -224,9 +224,21 @@ class PartInfo:
 # --------------------------------------------------------------------------- identities
 
 def lsblk_rows(*devices: str) -> list[dict]:
+    """lsblk rows of loop devices, read after udev has settled.
+
+    lsblk takes PARTUUID from the udev database; right after a table change the entries of
+    the surviving partitions are briefly empty.  The kernel/blkid value is the fallback, so
+    a partition of a GPT never shows up without its identity.
+    """
+    run("udevadm", "settle", check=False)
     out = run("lsblk", "--json", "--list", "--bytes", "--output",
               "PATH,TYPE,PKNAME,PARTN,PARTUUID,START,SIZE,LOG-SEC,FSTYPE,UUID", *devices)
-    return json.loads(out)["blockdevices"]
+    rows = json.loads(out)["blockdevices"]
+    for row in rows:
+        if row["type"] == "part" and not row.get("partuuid"):
+            row["partuuid"] = run("blkid", "-p", "-o", "value", "-s", "PART_ENTRY_UUID",
+                                  row["path"], check=False).strip().lower() or None
+    return rows
 
 
 def identity_from_node(node: str, role: str, volume_id: str, *, by_id: str | None = None,

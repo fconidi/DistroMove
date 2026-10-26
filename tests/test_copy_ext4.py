@@ -346,3 +346,30 @@ def test_never_writes_to_source(tmp_path):
     after = {p.relative_to(pair.source): p.read_bytes() for p in pair.source.rglob("*") if p.is_file()}
     assert after == before
     assert all(not str(pair.source).startswith(call[-1]) for call in r.calls if call[0] == "rsync")
+
+
+@pytest.mark.xfail(strict=False, reason="the checksum pass rewrites a file inside a directory "
+                   "after the reconcile pass; the directory mtime then differs from the frozen "
+                   "source by less than a second and rsync does not repair it")
+def test_checksum_pass_leaves_directory_mtimes_equal_to_the_source(tmp_path):
+    src, dst = tmp_path / "s", tmp_path / "d"
+    (src / "load").mkdir(parents=True)
+    dst.mkdir()
+    target = src / "load" / "f1"
+    target.write_bytes(b"A" * 4096)
+    r = Runner()
+    started = hot_pass(r, src, dst, []).started_at
+    before = target.stat()
+    time.sleep(0.05)
+    target.write_bytes(b"B" * 4096)                      # same size, same mtime: rsync skips it
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+    group = type("Group", (), {"ensure_active": lambda self: None, "journal": None})()
+    pair = CopyPair(src, dst, src, "x", ())
+    import distromove.copy_ext4 as module
+    original, module._check_pairs = module._check_pairs, lambda *a, **k: None
+    try:
+        assert checksum_candidates_pass(r, [pair], group, started) >= 1
+    finally:
+        module._check_pairs = original
+    assert (dst / "load" / "f1").read_bytes() == b"B" * 4096
+    assert (dst / "load").stat().st_mtime_ns == (src / "load").stat().st_mtime_ns
