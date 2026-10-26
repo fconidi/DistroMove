@@ -148,8 +148,7 @@ class SystemBackend:
         if source.secure_boot:
             self._signed = preflight_signed_chain(r, Path(source.esp.mountpoint), Path("/"), ctx.loader)
         assert_tables_unchanged(r, plan)
-        for volume in source.volumes:
-            SpaceWatch(r, volume.mountpoint).check()
+        watch_source_space(r, source)
         self._plan = plan
 
     def initialise_tables(self, plan: MigrationPlan, r, journal: Journal) -> MigrationPlan:
@@ -174,8 +173,7 @@ class SystemBackend:
         return updated
 
     def _watch(self, source: Source, r) -> None:
-        for volume in source.volumes:
-            SpaceWatch(r, volume.mountpoint).check()
+        watch_source_space(r, source)
 
     def create_storage(self, plan: MigrationPlan, source: Source, secrets: Secrets,
                        r, journal: Journal) -> None:
@@ -587,6 +585,13 @@ class MigrationBackend(Protocol):
     def registration_details(self) -> tuple[str, int, str, str]: ...
     def close(self, r, journal: Journal) -> None: ...
     def unwind(self, r, journal: Journal) -> None: ...
+
+
+def watch_source_space(r, source: Source) -> None:
+    """Free space matters where read-only snapshots are held; ext4 is only read."""
+    for volume in source.volumes:
+        if volume.btrfs is not None:
+            SpaceWatch(r, volume.mountpoint).check()
 
 
 def _event(emit: Callable[[dict], None], phase: str, **fields) -> None:

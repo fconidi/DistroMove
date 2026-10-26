@@ -493,3 +493,29 @@ def test_kill_leaves_journal_for_recovery(tmp_path, monkeypatch, step):
         assert rolled == [] or actions
     else:
         assert rolled == [1] and actions[-1].kind == "rolled_back"
+
+
+class StatRunner:
+    """Answers ``stat -f`` for mount points: total and available blocks of 4096 bytes."""
+
+    def __init__(self, filesystems):
+        self.filesystems = filesystems
+
+    def run(self, argv, *, readonly=False, **_kwargs):
+        import subprocess
+        total, avail = self.filesystems[argv[-1]]
+        return subprocess.CompletedProcess(argv, 0, f"4096 {total // 4096} {avail // 4096}\n", "")
+
+
+def test_source_space_is_watched_only_where_snapshots_are_taken():
+    import distromove.engine as engine
+    from distromove.layout import SourceSpaceLow
+    gib = 1024**3
+    small_boot = SimpleNamespace(volume_id="boot", mountpoint="/boot", btrfs=None)
+    btrfs_root = SimpleNamespace(volume_id="root", mountpoint="/", btrfs=object())
+    runner = StatRunner({"/boot": (1 * gib, gib // 2), "/": (20 * gib, 10 * gib)})
+    # a 1 GiB /boot has less than the 2 GiB floor free; nothing is snapshotted there
+    engine.watch_source_space(runner, SimpleNamespace(volumes=[small_boot, btrfs_root]))
+    runner.filesystems["/"] = (20 * gib, gib)
+    with pytest.raises(SourceSpaceLow):
+        engine.watch_source_space(runner, SimpleNamespace(volumes=[small_boot, btrfs_root]))
