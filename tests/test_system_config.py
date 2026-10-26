@@ -2,6 +2,7 @@
 from pathlib import Path
 from dataclasses import replace
 import json
+import os
 import subprocess
 
 import pytest
@@ -83,6 +84,8 @@ def test_cryptodisk_flag_only_when_boot_in_luks(tmp_path):
     assert "GRUB_ENABLE_CRYPTODISK=n" in (copy.root / "etc/default/grub").read_text()
 
 
+@pytest.mark.skipif(os.geteuid() != 0,
+                    reason="the early key file must be owned by root; a test file is not")
 def test_initramfs_hook_copies_crypttab_and_keyfile(tmp_path):
     copy = copied_root(tmp_path)
     key = copy.root / "etc/cryptsetup-keys.d/root.key"
