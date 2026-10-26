@@ -42,6 +42,12 @@ def _same(expected: VolumeIdentity, actual: VolumeIdentity,
         a, b = getattr(expected, key), getattr(actual, key)
         if erased_luks and expected.luks_uuid and b is None:
             continue
+        if (key == "fs_uuid" and b is None and expected.luks_uuid
+                and actual.luks_uuid
+                and expected.luks_uuid.casefold() == actual.luks_uuid.casefold()):
+            # The inner filesystem is invisible while its proven LUKS
+            # container is closed after booting the new system.
+            continue
         if (a or "").casefold() != (b or "").casefold():
             return False
     return True

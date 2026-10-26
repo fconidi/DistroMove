@@ -1149,11 +1149,6 @@ def test_sigkill_during_deletion_then_resume(env, fw, host, monkeypatch):
     assert not failures, failures
 
 
-@pytest.mark.xfail(reason="possible product defect: an encrypted old volume whose container "
-                          "is closed after the reboot has fs_uuid None in the live snapshot "
-                          "but the inner filesystem UUID in the saved identity, so the "
-                          "deletion guard reports 'partition identity changed'",
-                   strict=False)
 def test_deletion_guard_accepts_closed_encrypted_old_volume(env, fw):
     src = env.disk("ex-src", 200, [dict(name="esp", start_mib=1, size_mib=48, kind="esp"),
                                    dict(name="root", start_mib=50, size_mib=100)], by_id=True)

@@ -143,6 +143,27 @@ def test_luks_erase_does_not_make_resume_fail():
     assert can_delete_old(s, snap).ok
 
 
+def test_closed_old_luks_container_keeps_its_partition_identity():
+    snap = live()
+    closed = replace(snap.identities[0], fs_uuid=None)
+    snap = replace(snap, identities=[closed, *snap.identities[1:]])
+    assert can_delete_old(state(), snap).ok
+
+
+def test_closed_old_luks_container_rejects_changed_luks_identity():
+    snap = live()
+    changed = replace(snap.identities[0], luks_uuid="other-luks", fs_uuid=None)
+    snap = replace(snap, identities=[changed, *snap.identities[1:]])
+    assert any("old-root" in reason for reason in reasons(snap=snap))
+
+
+def test_open_old_luks_container_rejects_changed_filesystem_identity():
+    snap = live()
+    changed = replace(snap.identities[0], fs_uuid="other-fs")
+    snap = replace(snap, identities=[changed, *snap.identities[1:]])
+    assert any("old-root" in reason for reason in reasons(snap=snap))
+
+
 def test_refuse_when_a_live_partition_identity_is_unreadable():
     snap = live()
     unreadable = replace(snap.identities[0], partuuid=None)
