@@ -461,7 +461,9 @@ class SystemBackend:
                        "etc/grub.d/40_distromove_old",
                        "etc/initramfs-tools/conf.d/resume",
                        "etc/initramfs-tools/hooks/distromove-crypt",
-                       "boot/grub/grub.cfg", "etc/snapper/configs/root"}
+                       "boot/grub/grub.cfg", "etc/snapper/configs/root",
+                       # mkinitramfs builds in /var/tmp during the all-kernel initramfs update
+                       "var/tmp"}
         for reference, destination, excludes, excluded_names in self._references.values():
             dynamic = {path for path in reference.entries
                        if path.startswith("boot/initrd.img-") or
