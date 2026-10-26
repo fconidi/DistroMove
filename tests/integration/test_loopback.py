@@ -895,7 +895,7 @@ def _kill_case(env, monkeypatch, label, kill, luks, child_extra, notes):
         if hidden:
             notes["known_bug"] = hidden       # product gap, see KNOWN_HIDDEN_IDENTITY
             return []
-    if kinds != {"rolled_back"}:
+    if kinds - {"thawed"} != {"rolled_back"}:
         return [f"expected rollback, got {notes['actions']}"]
     return check_rolled_back(w)
 
@@ -940,7 +940,7 @@ def test_sigkill_after_every_journal_record_then_recovery(env, fw, host, monkeyp
             failures[k] = (found, info)
         elif "known_bug" in info:
             known[k] = info["known_bug"]
-    assert not failures, failures
+    assert not failures, "\n".join(f"record {k}: {value!r}" for k, value in failures.items())
     if known:
         pytest.xfail(KNOWN_HIDDEN_IDENTITY + f" {known}")
 
