@@ -59,6 +59,17 @@ def _inside(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def _overlaps(src: Path, dst: Path) -> bool:
+    """True when copying src to dst could read from or write into the same tree.
+
+    A destination mounted below the live source (staging under /run, for example) is on its
+    own filesystem, which the copy never enters because of --one-file-system.
+    """
+    if src == dst or _inside(src, dst):
+        return True
+    return _inside(dst, src) and os.stat(dst).st_dev == os.stat(src).st_dev
+
+
 def _relative(path: Path, root: Path) -> str:
     if not _inside(path, root) or path == root:
         raise ValueError(f"path is not a child of {root}: {path}")
@@ -142,7 +153,7 @@ def _check_pairs(pairs: list[CopyPair], journal: Journal | None = None,
         dst = Path(pair.destination).resolve(strict=True)
         mount = Path(pair.mountpoint).resolve(strict=True)
         if (not src.is_dir() or not dst.is_dir() or not mount.is_dir() or src != mount
-                or _inside(dst, src) or _inside(src, dst) or dst in destinations
+                or _overlaps(src, dst) or dst in destinations
                 or not pair.destination_fs_uuid):
             raise ValueError("invalid source or destination root")
         _manifest_excludes(pair.filters)

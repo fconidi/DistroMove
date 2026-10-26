@@ -48,6 +48,52 @@ class ActiveGroup:
         pass
 
 
+def _device_of(monkeypatch, devices):
+    """Report chosen st_dev values for given paths; every other path keeps its own."""
+    from distromove import copy_ext4 as module
+    real = os.stat
+
+    def fake(path, *args, **kwargs):
+        result = real(path, *args, **kwargs)
+        for prefix, device in devices.items():
+            if str(path) == str(prefix):
+                values = list(result)
+                values[2] = device
+                return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(module.os, "stat", fake)
+
+
+def test_destination_mounted_inside_a_live_source_is_accepted(tmp_path, monkeypatch):
+    # the live root is the source and the staging mount sits below it, on another filesystem
+    from distromove import copy_ext4 as module
+    src = tmp_path / "source"
+    dst = src / "run-staging"
+    dst.mkdir(parents=True)
+    _device_of(monkeypatch, {dst.resolve(): 4242})
+    module._check_pairs([CopyPair(src, dst, src, "new-fs", ())])
+
+
+def test_destination_inside_source_on_the_same_filesystem_is_rejected(tmp_path):
+    from distromove import copy_ext4 as module
+    src = tmp_path / "source"
+    dst = src / "inside"
+    dst.mkdir(parents=True)
+    with pytest.raises(ValueError, match="invalid source or destination root"):
+        module._check_pairs([CopyPair(src, dst, src, "new-fs", ())])
+
+
+def test_source_inside_destination_is_rejected(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    dst = tmp_path / "destination"
+    src = dst / "source"
+    src.mkdir(parents=True)
+    _device_of(monkeypatch, {dst.resolve(): 4242})
+    with pytest.raises(ValueError, match="invalid source or destination root"):
+        module._check_pairs([CopyPair(src, dst, src, "new-fs", ())])
+
+
 def test_rsync_args_exact():
     assert RSYNC_ARGS == ["-aAXHS", "--numeric-ids", "--one-file-system"]
 
