@@ -348,9 +348,6 @@ def test_never_writes_to_source(tmp_path):
     assert all(not str(pair.source).startswith(call[-1]) for call in r.calls if call[0] == "rsync")
 
 
-@pytest.mark.xfail(strict=False, reason="the checksum pass rewrites a file inside a directory "
-                   "after the reconcile pass; the directory mtime then differs from the frozen "
-                   "source by less than a second and rsync does not repair it")
 def test_checksum_pass_leaves_directory_mtimes_equal_to_the_source(tmp_path):
     src, dst = tmp_path / "s", tmp_path / "d"
     (src / "load").mkdir(parents=True)
