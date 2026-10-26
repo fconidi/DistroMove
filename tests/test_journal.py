@@ -767,9 +767,6 @@ def test_recover_never_reports_btrfs_snapshots(tmp_path):
     assert recover(jdir, snapshot([live_volume(PU["a"], fs_uuid=FU["a"])]), ROOT_UUID) == []
 
 
-@pytest.mark.xfail(strict=False, reason="recover() never matches a created partition whose "
-                   "planned fs_uuid cannot be read (closed LUKS container, no filesystem yet), "
-                   "so rollback of an encrypted destination ends in manual review")
 def test_recover_matches_created_partition_whose_planned_fs_uuid_is_unreadable(tmp_path):
     jdir = tmp_path / "journal"
     j = new_journal(jdir)
@@ -780,3 +777,58 @@ def test_recover_matches_created_partition_whose_planned_fs_uuid_is_unreadable(t
     live = snapshot([live_volume(PU["a"], luks_uuid=LU["a"], fs_uuid=None)])
     found = recover(jdir, live, ROOT_UUID)
     assert [r.kind for r in found] == ["partition"]
+
+
+
+def _created_partition_journal(tmp_path, luks=True):
+    jdir = tmp_path / "journal"
+    j = new_journal(jdir)
+    identity = dict(part_identity(PU["a"]), luks_uuid=LU["a"] if luks else None, fs_uuid=FU["a"])
+    j.done(j.intend("create_partition", identity, creates="partition", path="/dev/vdb2"),
+           "created")
+    return jdir, j
+
+
+def test_recover_refuses_partition_with_different_partuuid(tmp_path):
+    jdir, _ = _created_partition_journal(tmp_path)
+    live = snapshot([live_volume(PU["b"], luks_uuid=LU["a"], fs_uuid=None)])
+    assert recover(jdir, live, ROOT_UUID) == []
+
+
+def test_recover_refuses_partition_with_different_readable_fs_uuid(tmp_path):
+    jdir, _ = _created_partition_journal(tmp_path)
+    live = snapshot([live_volume(PU["a"], luks_uuid=LU["a"], fs_uuid=FU["b"])])
+    assert recover(jdir, live, ROOT_UUID) == []
+
+
+def test_recover_refuses_partition_with_different_luks_uuid(tmp_path):
+    jdir, _ = _created_partition_journal(tmp_path)
+    live = snapshot([live_volume(PU["a"], luks_uuid=LU["b"], fs_uuid=None)])
+    assert recover(jdir, live, ROOT_UUID) == []
+
+
+def test_recover_refuses_partition_with_different_size(tmp_path):
+    jdir, _ = _created_partition_journal(tmp_path)
+    live = snapshot([live_volume(PU["a"], size=8192, luks_uuid=LU["a"], fs_uuid=None)])
+    assert recover(jdir, live, ROOT_UUID) == []
+
+
+def test_recover_matches_partition_before_luks_and_filesystem_exist(tmp_path):
+    jdir, _ = _created_partition_journal(tmp_path)
+    live = snapshot([live_volume(PU["a"])])
+    assert [r.kind for r in recover(jdir, live, ROOT_UUID)] == ["partition"]
+
+
+def test_recover_refuses_unreadable_luks_uuid_after_the_container_was_formatted(tmp_path):
+    jdir, j = _created_partition_journal(tmp_path)
+    j.done(j.intend("luks_format", {"partuuid": PU["a"], "luks_uuid": LU["a"]},
+                    creates="luks"), "created")
+    live = snapshot([live_volume(PU["a"], luks_uuid=None, fs_uuid=None)])
+    assert recover(jdir, live, ROOT_UUID) == []
+
+
+def test_recover_refuses_unreadable_fs_uuid_without_luks_after_mkfs(tmp_path):
+    jdir, j = _created_partition_journal(tmp_path, luks=False)
+    j.done(j.intend("make_fs", {"fs_uuid": FU["a"]}, creates="filesystem"), "created")
+    live = snapshot([live_volume(PU["a"], fs_uuid=None)])
+    assert recover(jdir, live, ROOT_UUID) == []

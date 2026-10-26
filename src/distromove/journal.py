@@ -518,9 +518,43 @@ def open_windows(journal_dir: Path | str, running_root_uuid: str) -> list[OpenWi
             if e["type"] == "intent" and e["op"] == WINDOW_OP and e["op_id"] not in closed]
 
 
-def _match_volume(identity: dict, key: str, live: list[VolumeIdentity]) -> VolumeIdentity | None:
+def _was_created(groups: list[dict], creates: str, key: str, value: Any) -> bool:
+    """Whether the journal records an operation creating ``creates`` with ``key`` == value as done."""
+    for g in groups:
+        if g["intent"]["fields"].get("creates") != creates:
+            continue
+        if not any(_same(d.get(key), value) for d in g["dicts"]):
+            continue
+        if any(o["outcome"] == "created" for o in g["outcomes"]):
+            return True
+    return False
+
+
+def _unreadable_ok(identity: dict, k: str, v: VolumeIdentity, groups: list[dict]) -> bool:
+    """Whether a live ``k`` of None is legitimate given how far the journal got.
+
+    A LUKS UUID is unreadable until the container was formatted. A filesystem UUID is
+    unreadable while the LUKS container is closed (its own UUID is then read and compared),
+    or until the filesystem was created.
+    """
+    if k == "luks_uuid":
+        return not _was_created(groups, "luks", "luks_uuid", identity[k])
+    if k == "fs_uuid":
+        if v.luks_uuid and _same(v.luks_uuid, identity.get("luks_uuid")):
+            return True
+        return not _was_created(groups, "filesystem", "fs_uuid", identity[k])
+    return False
+
+
+def _match_volume(identity: dict, key: str, live: list[VolumeIdentity],
+                  groups: list[dict] | None = None) -> VolumeIdentity | None:
     """The one live volume carrying the pre-assigned identity, or None (absent, changed,
-    ambiguous)."""
+    ambiguous).
+
+    Every recorded identity key must be equal, except that a luks_uuid or fs_uuid that is
+    unreadable (None) on the live volume is accepted when the journal shows it cannot be
+    read yet (see ``_unreadable_ok``). A readable, different value always refuses.
+    """
     want = identity.get(key)
     if not isinstance(want, str) or not want.strip():
         return None
@@ -529,8 +563,15 @@ def _match_volume(identity: dict, key: str, live: list[VolumeIdentity]) -> Volum
         return None
     v = hits[0]
     for k in _VOLUME_KEYS:
-        if identity.get(k) is not None and _norm(getattr(v, k)) != _norm(identity[k]):
-            return None
+        if identity.get(k) is None:
+            continue
+        live_value = getattr(v, k)
+        if _norm(live_value) == _norm(identity[k]):
+            continue
+        if (k in ("luks_uuid", "fs_uuid") and _norm(live_value) in (None, "")
+                and _unreadable_ok(identity, k, v, groups or [])):
+            continue
+        return None
     return v
 
 
@@ -732,7 +773,7 @@ def recover(journal_dir: Path | str, live: SystemSnapshot, running_root_uuid: st
         kind = e["fields"].get("creates")
         identity = e["identity"]
         if kind in _VOLUME_KINDS:
-            match = _match_volume(identity, _VOLUME_KINDS[kind], live.identities)
+            match = _match_volume(identity, _VOLUME_KINDS[kind], live.identities, groups)
             if match is None or _volume_in_use(identity, match, live, groups, roots, resolve):
                 continue
             found: dict[str, Any] = dataclasses.asdict(match)
