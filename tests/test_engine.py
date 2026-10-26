@@ -296,6 +296,52 @@ def test_rollback_refuses_partition_still_in_use(tmp_path, monkeypatch):
     assert journal.is_current()
 
 
+@pytest.mark.parametrize("unreadable", ["", None])
+def test_rollback_reports_unreadable_partition_identity_without_mutating(
+        tmp_path, monkeypatch, unreadable):
+    import distromove.engine as engine
+    journal = Journal(tmp_path / "journal", "rollback-test", host_root_uuid="old-root")
+    journal.intend("create_partition", {"partuuid": "planned-part"}, creates="partition")
+    live = SimpleNamespace(running_root_uuid="old-root", mounts=[], mappers=[], identities=[
+        replace(identity("root", "x", "old-root"), partuuid=unreadable)])
+    ran = []
+    runner = SimpleNamespace(run=lambda argv, **kw: ran.append(argv))
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: live)
+    monkeypatch.setattr(engine, "discover_source", lambda r: SimpleNamespace(
+        volumes=[], esp=SimpleNamespace(mountpoint="/boot/efi")))
+    monkeypatch.setattr(engine, "recover", lambda *args: [SimpleNamespace(
+        kind="partition", identity={"partuuid": "planned-part"})])
+    actions = reconcile_on_start(runner, journal)
+    assert [a.kind for a in actions] == ["manual_review"]
+    assert "partition identity unreadable" in actions[0].detail
+    assert ran == []
+    assert journal.is_current()
+
+
+def test_rollback_reports_identity_unreadable_after_deleting_the_partition(
+        tmp_path, monkeypatch):
+    import distromove.engine as engine
+    journal = Journal(tmp_path / "journal", "rollback-test", host_root_uuid="old-root")
+    journal.intend("create_partition", {"partuuid": "planned-part"}, creates="partition")
+    before = SimpleNamespace(running_root_uuid="old-root", mounts=[], mappers=[], identities=[
+        replace(identity("root", "x", "old-root"), partuuid="planned-part")])
+    after = SimpleNamespace(**{**vars(before), "identities": [
+        replace(before.identities[0], partuuid="")]})
+    snapshots = iter([before, after, after])
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: next(snapshots))
+    monkeypatch.setattr(engine, "discover_source", lambda r: SimpleNamespace(
+        volumes=[], esp=SimpleNamespace(mountpoint="/boot/efi")))
+    monkeypatch.setattr(engine, "recover", lambda *args: [SimpleNamespace(
+        kind="partition", identity={"partuuid": "planned-part"})])
+    monkeypatch.setattr(engine, "_locate", lambda *args: ("/dev/loop9", 1, None))
+    ran = []
+    runner = SimpleNamespace(run=lambda argv, **kw: ran.append(argv))
+    with pytest.raises(RuntimeError, match="partition identity unreadable"):
+        rollback_destination(runner, journal)
+    assert ["udevadm", "settle"] in ran
+    assert ran.index(["udevadm", "settle"]) > ran.index(["partprobe", "/dev/loop9"])
+
+
 def test_efi_mount_is_rewritten_for_copied_chroot(tmp_path, monkeypatch):
     import distromove.engine as engine
     staging, scratch = tmp_path / "staging", tmp_path / "scratch"

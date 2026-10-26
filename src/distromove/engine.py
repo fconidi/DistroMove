@@ -866,6 +866,14 @@ def _release_journal_resources(r, journal: Journal, live, entries):
         live = collect_snapshot(r)
     return live
 
+def _live_partuuid(volume) -> str:
+    """PARTUUID of a live partition; an unreadable one needs manual review, not a crash."""
+    try:
+        return partuuid_key(volume)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def rollback_destination(r, journal: Journal) -> None:
     """Remove only detached destination partitions proven by the journal guard."""
     if not journal.is_current():
@@ -897,7 +905,7 @@ def rollback_destination(r, journal: Journal) -> None:
     parts = [item for item in residues if item.kind == "partition"]
     for item in reversed(parts):
         identity = item.identity
-        found = [v for v in live.identities if partuuid_key(v) ==
+        found = [v for v in live.identities if _live_partuuid(v) ==
                  str(identity["partuuid"]).casefold()]
         if len(found) != 1:
             raise RuntimeError("destination partition identity changed")
@@ -905,15 +913,16 @@ def rollback_destination(r, journal: Journal) -> None:
         op = journal.intend("rollback_partition", identity, disk=disk, part_no=number)
         r.run(["sgdisk", f"--delete={number}", disk])
         r.run(["partprobe", disk])
+        r.run(["udevadm", "settle"])
         journal.done(op, "removed")
         live = collect_snapshot(r)
-        if any(partuuid_key(v) == str(identity["partuuid"]).casefold()
+        if any(_live_partuuid(v) == str(identity["partuuid"]).casefold()
                for v in live.identities):
             raise RuntimeError("destination partition remained after rollback")
     remaining = recover(journal.root, live, live.running_root_uuid)
     planned = {str(item["identity"]["partuuid"]).casefold() for item in entries
                if item["type"] == "intent" and item["op"] == "create_partition"}
-    if any(partuuid_key(v) in planned for v in live.identities):
+    if any(_live_partuuid(v) in planned for v in live.identities):
         raise RuntimeError("created destination remains in use or changed")
     if remaining:
         raise RuntimeError("owned destination residues require manual review")
