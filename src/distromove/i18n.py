@@ -1,0 +1,160 @@
+"""Five complete interface catalogs with locale selection independent of GTK."""
+from __future__ import annotations
+
+import os
+
+LANGUAGES = ("en", "it", "fr", "de", "es")
+
+# Keys are stable program identifiers. Keep every catalog complete.
+_ROWS = {
+    "title": ("DistroMove",) * 5,
+    "tagline": ("Move the running system to new partitions.",
+                "Sposta il sistema in uso su nuove partizioni.",
+                "Déplacer le système actif vers de nouvelles partitions.",
+                "Das laufende System auf neue Partitionen verschieben.",
+                "Traslada el sistema en uso a particiones nuevas."),
+    "source": ("Source", "Origine", "Source", "Quelle", "Origen"),
+    "destination": ("Destination", "Destinazione", "Destination", "Ziel", "Destino"),
+    "encryption": ("Encryption", "Cifratura", "Chiffrement", "Verschlüsselung", "Cifrado"),
+    "summary": ("Review", "Riepilogo", "Récapitulatif", "Übersicht", "Resumen"),
+    "progress": ("Progress", "Avanzamento", "Progression", "Fortschritt", "Progreso"),
+    "result": ("Result", "Risultato", "Résultat", "Ergebnis", "Resultado"),
+    "delete_old": ("Delete old system", "Elimina il vecchio sistema", "Supprimer l’ancien système",
+                   "Altes System löschen", "Eliminar el sistema anterior"),
+    "next": ("Next", "Avanti", "Suivant", "Weiter", "Siguiente"),
+    "back": ("Back", "Indietro", "Retour", "Zurück", "Atrás"),
+    "refresh": ("Refresh", "Aggiorna", "Actualiser", "Aktualisieren", "Actualizar"),
+    "close": ("Close", "Chiudi", "Fermer", "Schließen", "Cerrar"),
+    "retry": ("Retry", "Riprova", "Réessayer", "Erneut versuchen", "Reintentar"),
+    "source_intro": ("The running system is the source. Existing partitions stay in place.",
+                     "Il sistema in uso è l’origine. Le partizioni esistenti restano al loro posto.",
+                     "Le système actif est la source. Les partitions existantes restent en place.",
+                     "Das laufende System ist die Quelle. Bestehende Partitionen bleiben erhalten.",
+                     "El sistema en uso es el origen. Las particiones existentes permanecen."),
+    "source_type": ("System type", "Tipo di sistema", "Type de système", "Systemtyp", "Tipo de sistema"),
+    "encrypted": ("Encrypted volumes", "Volumi cifrati", "Volumes chiffrés", "Verschlüsselte Volumes", "Volúmenes cifrados"),
+    "space_used": ("Space used", "Spazio usato", "Espace utilisé", "Belegter Speicher", "Espacio usado"),
+    "unmigrated": ("Other mounts", "Altri mount", "Autres montages", "Weitere Einhängungen", "Otros montajes"),
+    "include_mount": ("Include this mount", "Includi questo mount", "Inclure ce montage",
+                      "Diesen Mount einschließen", "Incluir este montaje"),
+    "database_notice": ("Stop active databases and containers for a consistent copy.",
+                        "Ferma database e container attivi per una copia coerente.",
+                        "Arrêtez les bases de données et conteneurs actifs pour une copie cohérente.",
+                        "Aktive Datenbanken und Container für eine konsistente Kopie anhalten.",
+                        "Detén las bases de datos y los contenedores activos para una copia coherente."),
+    "copy_limit": ("A live copy cannot guarantee application consistency across volumes.",
+                   "Una copia a caldo non garantisce la coerenza delle applicazioni tra volumi.",
+                   "Une copie à chaud ne garantit pas la cohérence des applications entre volumes.",
+                   "Eine Live-Kopie garantiert keine Anwendungskonsistenz über Volumes hinweg.",
+                   "Una copia en caliente no garantiza la coherencia de las aplicaciones entre volúmenes."),
+    "disk": ("Disk", "Disco", "Disque", "Datenträger", "Disco"),
+    "size_gib": ("Size (GiB)", "Dimensione (GiB)", "Taille (Gio)", "Größe (GiB)", "Tamaño (GiB)"),
+    "volume": ("Volume", "Volume", "Volume", "Volume", "Volumen"),
+    "swap": ("Swap", "Swap", "Swap", "Swap", "Intercambio"),
+    "esp": ("EFI system partition", "Partizione EFI", "Partition système EFI", "EFI-Systempartition", "Partición EFI"),
+    "esp_reuse": ("Reuse existing ESP", "Riusa la ESP esistente", "Réutiliser l’ESP existante",
+                  "Vorhandene ESP wiederverwenden", "Reutilizar la ESP existente"),
+    "esp_new": ("Create a new ESP", "Crea una nuova ESP", "Créer une nouvelle ESP",
+                "Neue ESP erstellen", "Crear una ESP nueva"),
+    "new_passphrase": ("New passphrase", "Nuova passphrase", "Nouvelle phrase secrète",
+                       "Neue Passphrase", "Nueva contraseña"),
+    "repeat_passphrase": ("Repeat passphrase", "Ripeti la passphrase", "Répéter la phrase secrète",
+                          "Passphrase wiederholen", "Repetir contraseña"),
+    "password_hint": ("The same new passphrase unlocks every migrated encrypted volume.",
+                      "La stessa nuova passphrase sblocca tutti i volumi cifrati migrati.",
+                      "La même nouvelle phrase secrète déverrouille tous les volumes chiffrés migrés.",
+                      "Dieselbe neue Passphrase entsperrt alle migrierten verschlüsselten Volumes.",
+                      "La misma contraseña nueva desbloquea todos los volúmenes cifrados migrados."),
+    "preview": ("Preview plan", "Anteprima del piano", "Aperçu du plan", "Planvorschau", "Vista previa del plan"),
+    "preview_hint": ("Preview only: no partitions or firmware are changed.",
+                     "Solo anteprima: partizioni e firmware non vengono modificati.",
+                     "Aperçu uniquement : partitions et firmware ne sont pas modifiés.",
+                     "Nur Vorschau: Partitionen und Firmware bleiben unverändert.",
+                     "Solo vista previa: no se modifican particiones ni firmware."),
+    "old_kept": ("The old system stays available until you boot the new one and approve its removal.",
+                 "Il vecchio sistema resta disponibile finché non avvii il nuovo e ne approvi la rimozione.",
+                 "L’ancien système reste disponible jusqu’au démarrage du nouveau et à l’approbation de sa suppression.",
+                 "Das alte System bleibt verfügbar, bis das neue gestartet und seine Löschung bestätigt wurde.",
+                 "El sistema anterior sigue disponible hasta que inicies el nuevo y apruebes su eliminación."),
+    "step_of": ("Step {current} of {total}", "Passo {current} di {total}",
+                "Étape {current} sur {total}", "Schritt {current} von {total}",
+                "Paso {current} de {total}"),
+    "start": ("Start migration", "Avvia la migrazione", "Démarrer la migration",
+              "Migration starten", "Iniciar la migración"),
+    "working": ("Working…", "Operazione in corso…", "Opération en cours…", "Vorgang läuft…", "Trabajando…"),
+    "complete": ("Migration completed. Reboot to the new system before deleting the old one.",
+                 "Migrazione completata. Riavvia nel nuovo sistema prima di eliminare il vecchio.",
+                 "Migration terminée. Redémarrez sur le nouveau système avant de supprimer l’ancien.",
+                 "Migration abgeschlossen. Vor dem Löschen des alten Systems neu starten.",
+                 "Migración completada. Reinicia en el sistema nuevo antes de eliminar el anterior."),
+    "failed": ("The operation stopped. Review the phase and retry only after checking the system.",
+               "L’operazione si è fermata. Controlla la fase e verifica il sistema prima di riprovare.",
+               "L’opération s’est arrêtée. Vérifiez la phase et le système avant de réessayer.",
+               "Der Vorgang wurde angehalten. Phase und System vor einem neuen Versuch prüfen.",
+               "La operación se detuvo. Revisa la fase y el sistema antes de reintentar."),
+    "delete_intro": ("Only the old partitions listed below will be removed.",
+                     "Saranno eliminate solo le vecchie partizioni elencate qui sotto.",
+                     "Seules les anciennes partitions listées ci-dessous seront supprimées.",
+                     "Nur die unten aufgeführten alten Partitionen werden gelöscht.",
+                     "Solo se eliminarán las particiones anteriores indicadas abajo."),
+    "erase_luks": ("Erase old LUKS keyslots", "Cancella i vecchi keyslot LUKS", "Effacer les anciens emplacements de clés LUKS",
+                   "Alte LUKS-Schlüsselplätze löschen", "Borrar las ranuras de claves LUKS anteriores"),
+    "delete_esp": ("Delete old ESP when safe", "Elimina la vecchia ESP se sicuro",
+                   "Supprimer l’ancienne ESP si possible", "Alte ESP löschen, wenn sicher",
+                   "Eliminar la ESP anterior cuando sea seguro"),
+    "type_confirmation": ("Type the full confirmation text below", "Digita tutto il testo di conferma qui sotto",
+                          "Saisissez tout le texte de confirmation ci-dessous",
+                          "Den vollständigen Bestätigungstext unten eingeben",
+                          "Escribe todo el texto de confirmación de abajo"),
+    "delete_action": ("Delete listed partitions", "Elimina le partizioni elencate",
+                      "Supprimer les partitions listées", "Aufgeführte Partitionen löschen",
+                      "Eliminar las particiones indicadas"),
+    "no_state": ("No activated migration was found on this running system.",
+                 "Nessuna migrazione attivata trovata su questo sistema in esecuzione.",
+                 "Aucune migration activée trouvée sur ce système actif.",
+                 "Keine aktivierte Migration auf diesem laufenden System gefunden.",
+                 "No se encontró una migración activada en este sistema en uso."),
+    "validation_error": ("Correct the highlighted values before continuing.",
+                         "Correggi i valori indicati prima di continuare.",
+                         "Corrigez les valeurs indiquées avant de continuer.",
+                         "Die markierten Werte vor dem Fortfahren korrigieren.",
+                         "Corrige los valores indicados antes de continuar."),
+    "not_migrated": ("Not migrated", "Non migrato", "Non migré", "Nicht migriert", "No migrado"),
+    "sectors": ("sectors", "settori", "secteurs", "Sektoren", "sectores"),
+    "already_removed": ("already removed", "già eliminato", "déjà supprimé",
+                        "bereits gelöscht", "ya eliminado"),
+    "gpt_label": ("GPT initialisation", "Inizializzazione GPT", "Initialisation GPT",
+                  "GPT-Initialisierung", "Inicialización GPT"),
+    "unavailable": ("The privileged helper is unavailable. Install DistroMove and try again.",
+                    "L’helper privilegiato non è disponibile. Installa DistroMove e riprova.",
+                    "L’assistant privilégié est indisponible. Installez DistroMove et réessayez.",
+                    "Der privilegierte Helfer ist nicht verfügbar. DistroMove installieren und erneut versuchen.",
+                    "El ayudante privilegiado no está disponible. Instala DistroMove e inténtalo de nuevo."),
+    "gpt_notice": ("No recognised signatures were found. This does not prove the disk has no data.",
+                   "Non sono state trovate firme riconosciute. Questo non prova che il disco sia privo di dati.",
+                   "Aucune signature reconnue trouvée. Cela ne prouve pas que le disque soit sans données.",
+                   "Keine erkannten Signaturen gefunden. Dies beweist nicht, dass der Datenträger leer ist.",
+                   "No se encontraron firmas reconocidas. Esto no demuestra que el disco no tenga datos."),
+}
+
+MESSAGES = {language: {key: values[index] for key, values in _ROWS.items()}
+            for index, language in enumerate(LANGUAGES)}
+
+
+def detect_language(environment=None) -> str:
+    env = os.environ if environment is None else environment
+    locale = env.get("LC_ALL") or env.get("LC_MESSAGES") or env.get("LANG") or ""
+    if locale.upper() in {"C", "POSIX", "C.UTF-8", "C.UTF8"}:
+        return "en"
+    for candidate in env.get("LANGUAGE", "").split(":") + [locale]:
+        language = candidate.replace("-", "_").split("_")[0].split(".")[0].lower()
+        if language in LANGUAGES:
+            return language
+    return "en"
+
+
+LANGUAGE = detect_language()
+
+
+def tr(key: str, language: str | None = None) -> str:
+    return MESSAGES.get(language or LANGUAGE, MESSAGES["en"]).get(key, key)

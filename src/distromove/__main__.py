@@ -8,8 +8,14 @@ def main(argv=None) -> int:
     if args and args[0] in ("--version", "-V"):
         print(f"distromove {__version__}")
         return 0
-    print("usage: python3 -m distromove [--version]")
-    return 0 if not args or args[0] in ("-h", "--help") else 2
+    if args and args[0] in ("-h", "--help"):
+        print("usage: python3 -m distromove [--version]")
+        return 0
+    if args:
+        print("usage: python3 -m distromove [--version]", file=sys.stderr)
+        return 2
+    from .gui import launch
+    return launch()
 
 
 if __name__ == "__main__":

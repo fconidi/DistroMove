@@ -209,3 +209,51 @@ def test_btrfs_top_mount_is_journalled_before_mount(tmp_path, monkeypatch):
     assert actions[1][0:2] == ('intent', 'mount_destination')
     assert actions[2] == ('run', 'mount')
     assert actions[-1] == ('done', 'mounted')
+
+
+def test_plan_requests_gpt_word_only_for_signature_free_disk(monkeypatch):
+    from distromove.layout import InitGpt, NoTable
+
+    source = SimpleNamespace(
+        volumes=[SimpleNamespace(volume_id='root')], unmigrated_mounts=[],
+        esp=SimpleNamespace(partition=SimpleNamespace(parent_disk='/dev/old')))
+    info = SimpleNamespace(path='/dev/new', by_id='/dev/disk/by-id/stable',
+                           wwn='wwn-1', serial='SERIAL', signatures=(),
+                           size_bytes=20 * 1024**3, logical_sector=512)
+    monkeypatch.setattr(helper, 'discover_source', lambda r, **kwargs: source)
+    monkeypatch.setattr(helper, '_disk_inventory', lambda r: [
+        {'path': '/dev/new', 'by_id': info.by_id, 'wwn': info.wwn,
+         'serial': info.serial}])
+    monkeypatch.setattr(helper, 'disk_info', lambda r, path: info)
+    monkeypatch.setattr(helper, 'scan_disk', lambda r, path:
+                        (_ for _ in ()).throw(NoTable(path, True)))
+    monkeypatch.setattr(helper, 'plan_init_gpt', lambda value: InitGpt(
+        '/dev/new', 'stable disk', 'SERIAL', info.size_bytes, 512))
+    request = {'targets': [{'volume_id': 'root', 'disk': '/dev/new',
+                            'size_bytes': 10 * 1024**3}],
+               'esp': {'mode': 'reuse'}}
+    result = helper._planned(request, object())
+    assert result['needs_gpt_confirmation'][0]['confirmation'] == 'SERIAL'
+    assert result['needs_gpt_confirmation'][0]['signatures'] == []
+
+
+def test_plan_refuses_unrecognized_disk_signatures(monkeypatch):
+    from distromove.layout import NoTable
+
+    source = SimpleNamespace(
+        volumes=[SimpleNamespace(volume_id='root')], unmigrated_mounts=[],
+        esp=SimpleNamespace(partition=SimpleNamespace(parent_disk='/dev/old')))
+    monkeypatch.setattr(helper, 'discover_source', lambda r, **kwargs: source)
+    monkeypatch.setattr(helper, '_disk_inventory', lambda r: [
+        {'path': '/dev/new', 'by_id': '/dev/disk/by-id/stable',
+         'wwn': 'wwn-1', 'serial': None}])
+    monkeypatch.setattr(helper, 'disk_info', lambda r, path: SimpleNamespace(
+        path=path, by_id='/dev/disk/by-id/stable', wwn='wwn-1', serial=None))
+    monkeypatch.setattr(helper, 'scan_disk', lambda r, path:
+                        (_ for _ in ()).throw(NoTable(path, False)))
+    monkeypatch.setattr(helper, 'plan_init_gpt', lambda info:
+                        pytest.fail('GPT offered on a disk with signatures'))
+    with pytest.raises(ValueError, match='no usable GPT'):
+        helper._planned({'targets': [{'volume_id': 'root', 'disk': '/dev/new',
+                                      'size_bytes': 10 * 1024**3}],
+                          'esp': {'mode': 'reuse'}}, object())

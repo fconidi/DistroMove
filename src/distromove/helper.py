@@ -19,19 +19,21 @@ from .cleanup import delete_old_system
 from .engine import (MigrationContext, Secrets, reconcile_on_start,
                      rollback_destination, run_migration)
 from .disk import GrubCaps
-from .layout import (EspChoice, InitGpt, MigrationPlan, Partplan, VolumeTarget,
-                     disk_info)
+from .layout import (EspChoice, InitGpt, MigrationPlan, NoTable, Partplan,
+                     VolumeTarget, disk_info, fingerprint_tables, plan_init_gpt,
+                     plan_layout, scan_disk)
 from .model import LoaderInfo, PlannedIdentity
 from .probe_parse import loader_of
 from .journal import DEFAULT_ROOT, Journal, Lock, current_journal, read_journal, recover
-from .probe import collect_snapshot, discover_source
+from .probe import collect_snapshot, database_activity, discover_source
 from .runner import Runner
 from .state import load_state
-from .safety import confirmation_text
+from .safety import can_delete_old, confirmation_text
 
 SECRET_MAX = 1024
 CONTROL_MAX = 16 * 1024 * 1024
-_OPS = frozenset({"probe", "migrate", "delete_old", "recover", "reconcile"})
+_OPS = frozenset({"probe", "plan", "migrate", "preview_delete",
+                  "delete_old", "recover", "reconcile"})
 
 
 def write_frame(stream: BinaryIO, payload: bytes) -> None:
@@ -154,7 +156,9 @@ def _plan(raw: dict, source, r: Runner) -> MigrationPlan:
         targets.append(VolumeTarget(volumes[volume_id], disk(item["disk"]),
                                     int(item["size_bytes"])))
     esp = raw["esp"]
-    esp_choice = EspChoice(esp["mode"], disk(esp["disk"]), int(esp["size_bytes"]))
+    esp_choice = (EspChoice("reuse", source.esp.partition.parent_disk, 0)
+                  if esp["mode"] == "reuse" else
+                  EspChoice("new", disk(esp["disk"]), int(esp["size_bytes"])))
 
     def partitions(key):
         return [Partplan(disk(item["disk"]), int(item["start_sectors"]),
@@ -221,6 +225,92 @@ def _grub_caps() -> GrubCaps:
                     frozenset({"aes-xts-plain64"}) if versions else frozenset())
 
 
+def _disk_inventory(r: Runner) -> list[dict]:
+    raw = r.run(["lsblk", "--json", "--nodeps", "--output", "PATH,TYPE"],
+                readonly=True).stdout
+    entries = json.loads(raw).get("blockdevices", [])
+    return [asdict(disk_info(r, item["path"])) for item in entries
+            if item.get("type") == "disk" and isinstance(item.get("path"), str)]
+
+
+def _planned(data: dict, r: Runner) -> dict:
+    """Read-only plan from local disks and source, never GUI supplied geometry."""
+    include = data.get("include_mounts", [])
+    if not isinstance(include, list) or any(not isinstance(item, str) for item in include):
+        raise ValueError("invalid mount selection")
+    base = discover_source(r)
+    offered = {item.target for item in base.unmigrated_mounts}
+    if not set(include) <= offered:
+        raise ValueError("mount selection changed")
+    source = discover_source(r, extra_mounts=include)
+    choices = data.get("targets")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("missing volume targets")
+    volumes = {item.volume_id: item for item in source.volumes}
+    if len(choices) != len(volumes):
+        raise ValueError("every source volume needs a target")
+    targets = []
+    selected = set()
+    for item in choices:
+        if not isinstance(item, dict) or item.get("volume_id") not in volumes:
+            raise ValueError("unknown volume target")
+        path = item.get("disk")
+        if not isinstance(path, str) or not path.startswith("/dev/"):
+            raise ValueError("invalid disk choice")
+        size = item.get("size_bytes")
+        if type(size) is not int or size <= 0:
+            raise ValueError("invalid target size")
+        targets.append(VolumeTarget(volumes[item["volume_id"]], path, size))
+        selected.add(path)
+    if len({item.volume.volume_id for item in targets}) != len(volumes):
+        raise ValueError("duplicate volume target")
+    esp_request = data.get("esp")
+    if not isinstance(esp_request, dict) or esp_request.get("mode") not in {"reuse", "new"}:
+        raise ValueError("invalid ESP choice")
+    if esp_request["mode"] == "new":
+        esp_disk = esp_request.get("disk")
+        if not isinstance(esp_disk, str) or not esp_disk.startswith("/dev/"):
+            raise ValueError("invalid ESP disk")
+        selected.add(esp_disk)
+        esp = EspChoice("new", esp_disk, 512 * 1024**2)
+    else:
+        esp = EspChoice("reuse", source.esp.partition.parent_disk, 0)
+    inventory = {item["path"]: item for item in _disk_inventory(r)}
+    if not selected <= inventory.keys():
+        raise ValueError("selected disk is no longer available")
+    regions, init = [], []
+    confirmations = data.get("gpt_confirmations", {})
+    if not isinstance(confirmations, dict):
+        raise ValueError("invalid GPT confirmations")
+    needed = []
+    for path in sorted(selected):
+        info = disk_info(r, path)
+        if not info.by_id or not (info.wwn or info.serial):
+            raise ValueError("destination disk has no stable identity")
+        try:
+            regions.extend(scan_disk(r, path))
+        except NoTable as missing:
+            proposal = plan_init_gpt(info) if missing.can_init else None
+            if proposal is None:
+                raise ValueError("destination disk has no usable GPT")
+            if confirmations.get(path) != proposal.confirmation:
+                needed.append({"disk": path, "disk_identity": proposal.disk_identity,
+                               "confirmation": proposal.confirmation,
+                               "signatures": list(info.signatures or ())})
+            else:
+                init.append(replace(proposal, typed_confirmation=proposal.confirmation))
+    if needed:
+        return {"ok": True, "needs_gpt_confirmation": needed}
+    approved = fingerprint_tables(r, selected)
+    plan = plan_layout(source, targets, esp, regions, init_gpt=init,
+                       approved_tables=approved)
+    disks = {path: {"by_id": inventory[path]["by_id"],
+                    "wwn": inventory[path]["wwn"], "serial": inventory[path]["serial"]}
+             for path in selected}
+    return {"ok": True, "source": asdict(source),
+            "plan": {**asdict(plan), "disks": disks}}
+
+
 def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
     migration_id = data.get("migration_id")
     if not isinstance(migration_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", migration_id):
@@ -229,7 +319,13 @@ def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
         actions = _reconcile(r)
         for action in actions:
             emit({"phase": "reconcile", **action})
-        source = discover_source(r)
+        include = data.get("include_mounts", [])
+        if not isinstance(include, list) or any(not isinstance(item, str) for item in include):
+            raise ValueError("invalid mount selection")
+        base_source = discover_source(r)
+        if not set(include) <= {item.target for item in base_source.unmigrated_mounts}:
+            raise ValueError("mount selection changed")
+        source = discover_source(r, extra_mounts=include)
         fresh_source = json.loads(json.dumps(asdict(source)))
         if data.get("source") != fresh_source:
             raise ValueError("source changed since planning")
@@ -288,7 +384,38 @@ def system_operation(data: dict, secret: bytes | None,
     if op == "probe":
         with Lock():
             actions = _reconcile(r)
-            return {"ok": True, "actions": actions, "source": asdict(discover_source(r))}
+            live = collect_snapshot(r)
+            state = load_state(Path("/"), live.running_root_uuid)
+            base = discover_source(r)
+            include = data.get("include_mounts", [])
+            if (not isinstance(include, list) or any(not isinstance(item, str) for item in include)
+                    or not set(include) <= {item.target for item in base.unmigrated_mounts}):
+                raise ValueError("invalid mount selection")
+            source = discover_source(r, extra_mounts=include) if include else base
+            return {"ok": True, "actions": actions, "source": asdict(source),
+                    "disks": _disk_inventory(r), "activity": database_activity(r),
+                    "state": asdict(state) if state else None}
+    if op == "plan":
+        with Lock():
+            _reconcile(r)
+            return _planned(data, r)
+    if op == "preview_delete":
+        if (type(data.get("erase_luks_header", False)) is not bool
+                or type(data.get("delete_old_esp", False)) is not bool):
+            raise ValueError("invalid deletion options")
+        with Lock():
+            _reconcile(r)
+            live = collect_snapshot(r)
+            state = load_state(Path("/"), live.running_root_uuid)
+            if state is None:
+                raise ValueError("no state for running root")
+            old_esp = data.get("delete_old_esp", False)
+            decision = can_delete_old(state, live, delete_old_esp=old_esp)
+            return {"ok": True, "allowed": decision.ok, "reasons": decision.reasons,
+                    "state": asdict(state),
+                    "confirmation": confirmation_text(
+                        state, delete_old_esp=old_esp,
+                        erase_luks_header=data.get("erase_luks_header", False))}
     if op == "recover":
         with Lock():
             actions = _reconcile(r)
