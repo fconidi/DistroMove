@@ -161,6 +161,28 @@ def test_snapper_reset_only_syslinuxos(tmp_path):
     assert 'TIMELINE_CREATE="yes"' in config.read_text()
 
 
+def test_snapper_reset_reads_os_release_symlink_inside_the_copy(tmp_path):
+    # on current distributions /etc/os-release is a relative link to /usr/lib/os-release
+    copy = copied_root(tmp_path)
+    (copy.root / "usr/lib").mkdir(parents=True)
+    (copy.root / "usr/lib/os-release").write_text("ID=debian\n")
+    (copy.root / "etc/os-release").symlink_to("../usr/lib/os-release")
+    assert not reset_snapper(copy)
+    (copy.root / "usr/lib/os-release").write_text("ID=syslinuxos\n")
+    (copy.root / ".snapshots").mkdir()
+    config = copy.root / "etc/snapper/configs/root"
+    config.parent.mkdir(parents=True)
+    config.write_text('SUBVOLUME="/old"\n')
+    assert reset_snapper(copy)
+
+
+def test_snapper_reset_refuses_os_release_link_leaving_the_copy(tmp_path):
+    copy = copied_root(tmp_path)
+    (tmp_path / "outside").write_text("ID=syslinuxos\n")
+    (copy.root / "etc/os-release").symlink_to("../../outside")
+    assert not reset_snapper(copy)
+
+
 def test_assert_identities_fails_on_old_device(tmp_path):
     copy = copied_root(tmp_path)
 

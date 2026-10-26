@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import os
 import re
 import shlex
 import stat
@@ -230,9 +231,21 @@ def rebuild_initramfs(chroot) -> list[Path]:
     return images
 
 
+def _os_release(chroot) -> str:
+    """Read /etc/os-release, which is normally a relative link into the copy itself."""
+    root = Path(chroot.root)
+    link = root / "etc/os-release"
+    if not link.is_symlink():
+        return _read(chroot, "etc/os-release", required=False)
+    target = (link.parent / os.readlink(link)).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
+        return ""
+    return target.read_text(encoding="utf-8", errors="replace")
+
+
 def reset_snapper(chroot) -> bool:
     """Prepare an empty snapshot tree and point SysLinuxOS snapper at the new root."""
-    os_release = _read(chroot, "etc/os-release", required=False)
+    os_release = _os_release(chroot)
     if not re.search(r"^ID=['\"]?syslinuxos['\"]?$", os_release, re.M):
         return False
     snapshots = Path(chroot.root) / ".snapshots"
