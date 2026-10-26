@@ -103,19 +103,28 @@ def save_state(state: MigrationState, root: Path | str) -> Path:
     return path
 
 
+def state_from_record(raw: dict) -> MigrationState:
+    """Validate a state copied into a durable journal record."""
+    if not isinstance(raw, dict):
+        raise ValueError("invalid state record")
+    try:
+        values = dict(raw)
+        for key in ("old_volumes", "new_volumes"):
+            values[key] = [VolumeIdentity(**item) for item in values[key]]
+        for key in ("old_esp", "new_esp"):
+            values[key] = VolumeIdentity(**values[key])
+        state = MigrationState(**values)
+        _validate(state)
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        raise ValueError("invalid state record") from exc
+    return state
+
+
 def _decode(path: Path) -> MigrationState:
     if (path.is_symlink() or not path.is_file()
             or stat.S_IMODE(path.stat().st_mode) != 0o600):
         raise ValueError("unsafe state file")
-    raw = json.loads(path.read_text())
-    if not isinstance(raw, dict):
-        raise ValueError("invalid state JSON")
-    for key in ("old_volumes", "new_volumes"):
-        raw[key] = [VolumeIdentity(**item) for item in raw[key]]
-    for key in ("old_esp", "new_esp"):
-        raw[key] = VolumeIdentity(**raw[key])
-    state = MigrationState(**raw)
-    _validate(state)
+    state = state_from_record(json.loads(path.read_text()))
     if path.name != _filename(state.migration_id):
         raise ValueError("state filename and identity differ")
     return state

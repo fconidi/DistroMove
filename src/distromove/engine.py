@@ -5,7 +5,7 @@ explicit backend so tests can exercise failures without touching a disk.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import json
 from pathlib import Path
 from typing import Callable, Protocol
@@ -32,7 +32,7 @@ from .layout import (MigrationPlan, SpaceWatch, assert_tables_unchanged,
 from .model import CreatedPartition, LoaderInfo, SnapshotRef, Source, UuidMap
 from .probe import check_tools, collect_snapshot, discover_source
 from .probe_parse import loader_of
-from .state import MigrationState, load_state, save_state
+from .state import MigrationState, load_state, save_state, state_from_record
 from .swap import SwapMount, SwapPlan, make_swaps
 from .system_config import (apply_configs, install_crypt_hooks,
                             rebuild_initramfs, reset_snapper, _read as config_read,
@@ -670,7 +670,7 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
         # if it is killed between the state write and its journal outcome.
         op = journal.intend("pending_activation", {"new_root_uuid": state.new_root_uuid},
                             state_root=str(backend.new_root),
-                            registration=list(backend.registration_details()))
+                            registration=list(backend.registration_details()), state=asdict(state))
         save_state(state, backend.new_root)
         journal.done(op, "saved")
         pending = True
@@ -705,6 +705,39 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
     finally:
         if owns_lock:
             lock.__exit__(None, None, None)
+
+
+def _saved_unmounted_state(entry: dict, entries: list[dict], live,
+                           root: Path, root_uuid: str) -> MigrationState | None:
+    """Use a confirmed journal copy only after the destination was unmounted."""
+    if any(m.target == str(root) for m in getattr(live, "mounts", [])):
+        return None
+    if not any(e["type"] == "outcome" and e["op_id"] == entry["op_id"]
+               and e["outcome"] == "saved" for e in entries):
+        return None
+    try:
+        state = state_from_record(entry["fields"]["state"])
+        if (state.phase != "PENDING_ACTIVATION" or not state.verified
+                or state.new_root_uuid.casefold() != root_uuid.casefold()):
+            return None
+        for expected in state.new_volumes:
+            matches = [v for v in live.identities
+                       if partuuid_key(v) == expected.partuuid.casefold()]
+            if len(matches) != 1:
+                return None
+            actual = matches[0]
+            for key in ("disk_wwn", "disk_serial", "disk_by_id", "start_sectors",
+                        "size_sectors", "luks_uuid"):
+                planned = getattr(expected, key)
+                if planned is not None and getattr(actual, key) != planned:
+                    return None
+            if actual.fs_uuid != expected.fs_uuid and not (
+                    expected.luks_uuid and actual.luks_uuid == expected.luks_uuid
+                    and actual.fs_uuid is None):
+                return None
+        return state
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return None
 
 
 def reconcile_on_start(r, journal: Journal, *, state_root: Path | None = None) -> list[Action]:
@@ -755,9 +788,12 @@ def reconcile_on_start(r, journal: Journal, *, state_root: Path | None = None) -
         root = Path(entry["fields"]["state_root"])
         root_uuid = entry["identity"]["new_root_uuid"]
         state = load_state(root, root_uuid)
+        state_unmounted = state is None
         if state is None:
-            actions.append(Action("manual_review", "pending destination state is not mounted"))
-            return actions
+            state = _saved_unmounted_state(entry, entries, live, root, root_uuid)
+            if state is None:
+                actions.append(Action("manual_review", "pending destination state is not mounted"))
+                return actions
         if state.migration_id != journal.migration_id or not state.verified:
             raise ValueError("pending state differs from journal")
         disk, number, path, label = entry["fields"]["registration"]
@@ -796,7 +832,8 @@ def reconcile_on_start(r, journal: Journal, *, state_root: Path | None = None) -
             bootnum = register_new_entry(r, disk, int(number), path, label, journal)
             actions.append(Action("entry_retried", bootnum))
         if state.phase == "PENDING_ACTIVATION":
-            save_state(replace(state, phase="ACTIVATED", uefi_entry=bootnum), root)
+            if not state_unmounted:
+                save_state(replace(state, phase="ACTIVATED", uefi_entry=bootnum), root)
         elif state.uefi_entry != bootnum:
             raise ValueError("saved firmware number changed")
         _release_journal_resources(r, journal, live, entries)

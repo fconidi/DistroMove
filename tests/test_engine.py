@@ -230,6 +230,54 @@ def test_pending_unmounted_state_is_never_rolled_back(tmp_path, monkeypatch):
     assert actions[-1].kind == "manual_review"
 
 
+def test_saved_pending_state_recovers_after_destination_was_unmounted(tmp_path, monkeypatch):
+    import distromove.engine as engine
+    backend = Backend(tmp_path / "new", fail="register_entry")
+    _, _, journal = execute(tmp_path, backend)
+    state = load_state(backend.new_root, "new-root")
+    live = SimpleNamespace(running_root_uuid="old-root", identities=state.new_volumes,
+                           mounts=[], mappers=[])
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: live)
+    monkeypatch.setattr(engine, "load_state", lambda root, uuid: None)
+    monkeypatch.setattr(engine, "_partuuid", lambda r, disk, number: state.new_esp.partuuid)
+    monkeypatch.setattr(engine, "loader_of", lambda line:
+                        (state.new_esp.partuuid, "\\EFI\\distromove\\grubx64.efi"))
+    monkeypatch.setattr(engine, "_state", lambda r: BootState(("0007",),
+                        {"0007": "Boot0007* distromove HD(1,GPT,part-new-esp,0x800,0x1000)"},
+                        "0001"))
+    monkeypatch.setattr(engine, "_release_journal_resources", lambda *args: live)
+    monkeypatch.setattr(engine, "save_state", lambda *args:
+                        pytest.fail("an unmounted state root must not be written"))
+    actions = reconcile_on_start(object(), journal)
+    assert actions[-1] == engine.Action("activated", "0007")
+    assert not journal.is_current()
+
+
+@pytest.mark.parametrize("unsafe", ["changed_identity", "missing_saved_outcome"])
+def test_unmounted_pending_state_refuses_unproven_recovery(tmp_path, monkeypatch, unsafe):
+    import distromove.engine as engine
+    backend = Backend(tmp_path / "new", fail="register_entry")
+    _, _, journal = execute(tmp_path, backend)
+    state = load_state(backend.new_root, "new-root")
+    identities = list(state.new_volumes)
+    if unsafe == "changed_identity":
+        identities[0] = replace(identities[0], partuuid="replacement")
+    else:
+        original = engine.read_journal
+        monkeypatch.setattr(engine, "read_journal", lambda path: [
+            item for item in original(path)
+            if not (item["type"] == "outcome" and item["outcome"] == "saved")])
+    live = SimpleNamespace(running_root_uuid="old-root", identities=identities,
+                           mounts=[], mappers=[])
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: live)
+    monkeypatch.setattr(engine, "load_state", lambda root, uuid: None)
+    monkeypatch.setattr(engine, "_partuuid", lambda *args:
+                        pytest.fail("unproven state must not reach firmware registration"))
+    actions = reconcile_on_start(object(), journal)
+    assert actions == [engine.Action("manual_review", "pending destination state is not mounted")]
+    assert journal.is_current()
+
+
 def test_table_change_aborts_before_storage_write(tmp_path, monkeypatch):
     import distromove.engine as engine
     staging, scratch = tmp_path / "staging", tmp_path / "scratch"
