@@ -141,3 +141,11 @@ def test_luks_erase_does_not_make_resume_fail():
     snap = replace(snap, identities=[replace(snap.identities[0], luks_uuid=None, fs_uuid=None),
                                      *snap.identities[1:]])
     assert can_delete_old(s, snap).ok
+
+
+def test_refuse_when_a_live_partition_identity_is_unreadable():
+    snap = live()
+    unreadable = replace(snap.identities[0], partuuid=None)
+    snap = replace(snap, identities=[unreadable, *snap.identities[1:]])
+    found = reasons(snap=snap)
+    assert any("partition identity unreadable" in x for x in found)

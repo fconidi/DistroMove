@@ -26,6 +26,7 @@ from .disk import (DestinationMount, GrubCaps, add_keyfile, create_partitions, i
 from .esp import _partuuid, _state, create_esp, copy_esp, register_new_entry
 from .copy_ext4 import FreezeStats
 from .journal import AlreadyRunning, Journal, Lock, open_windows, read_journal, recover
+from .safety import partuuid_key
 from .layout import (MigrationPlan, SpaceWatch, assert_tables_unchanged,
                      estimate_min_bytes, fingerprint_tables, scan_disk)
 from .model import CreatedPartition, LoaderInfo, SnapshotRef, Source, UuidMap
@@ -250,7 +251,7 @@ class SystemBackend:
             copy_esp(r, source.esp.mountpoint, self.context.staging_root / "boot/efi", journal)
         # Resolve the number from the live PARTUUID, not a guessed device suffix.
         live = collect_snapshot(r)
-        matching = [v for v in live.identities if v.partuuid.casefold() ==
+        matching = [v for v in live.identities if partuuid_key(v) ==
                     (self._created["esp"].partuuid if plan.esp.mode == "new"
                      else source.esp.partition.partuuid).casefold()]
         if len(matching) != 1:
@@ -516,7 +517,7 @@ class SystemBackend:
     def pending_state(self, source: Source, journal: Journal) -> MigrationState:
         live = collect_snapshot(self._runner)
         def find(partuuid: str):
-            found = [v for v in live.identities if v.partuuid.casefold() == partuuid.casefold()]
+            found = [v for v in live.identities if partuuid_key(v) == partuuid.casefold()]
             if len(found) != 1:
                 raise ValueError("planned partition is absent or ambiguous")
             return found[0]
@@ -896,7 +897,7 @@ def rollback_destination(r, journal: Journal) -> None:
     parts = [item for item in residues if item.kind == "partition"]
     for item in reversed(parts):
         identity = item.identity
-        found = [v for v in live.identities if v.partuuid.casefold() ==
+        found = [v for v in live.identities if partuuid_key(v) ==
                  str(identity["partuuid"]).casefold()]
         if len(found) != 1:
             raise RuntimeError("destination partition identity changed")
@@ -906,13 +907,13 @@ def rollback_destination(r, journal: Journal) -> None:
         r.run(["partprobe", disk])
         journal.done(op, "removed")
         live = collect_snapshot(r)
-        if any(v.partuuid.casefold() == str(identity["partuuid"]).casefold()
+        if any(partuuid_key(v) == str(identity["partuuid"]).casefold()
                for v in live.identities):
             raise RuntimeError("destination partition remained after rollback")
     remaining = recover(journal.root, live, live.running_root_uuid)
     planned = {str(item["identity"]["partuuid"]).casefold() for item in entries
                if item["type"] == "intent" and item["op"] == "create_partition"}
-    if any(v.partuuid.casefold() in planned for v in live.identities):
+    if any(partuuid_key(v) in planned for v in live.identities):
         raise RuntimeError("created destination remains in use or changed")
     if remaining:
         raise RuntimeError("owned destination residues require manual review")

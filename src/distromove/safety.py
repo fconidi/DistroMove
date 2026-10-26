@@ -18,6 +18,16 @@ class DeleteDecision:
     reasons: list[str]
 
 
+def partuuid_key(volume: VolumeIdentity) -> str:
+    """Case-folded PARTUUID of a live partition; an unreadable one is an error, never absence."""
+    value = volume.partuuid
+    if not isinstance(value, str) or not value.strip():
+        where = volume.disk_by_id or volume.disk_wwn or volume.disk_serial or "unknown disk"
+        raise ValueError(f"partition identity unreadable (start sector {volume.start_sectors} "
+                         f"on {where})")
+    return value.casefold()
+
+
 def _same(expected: VolumeIdentity, actual: VolumeIdentity,
           *, erased_luks: bool = False) -> bool:
     for key in ("partuuid", "disk_wwn", "disk_serial", "disk_by_id",
@@ -146,7 +156,10 @@ def can_delete_old(state: MigrationState, live: SystemSnapshot, *,
                 reasons.append(f"{old.volume_id}: old and new partitions overlap")
     seen = {}
     for volume in live.identities:
-        seen.setdefault(volume.partuuid.casefold(), []).append(volume)
+        try:
+            seen.setdefault(partuuid_key(volume), []).append(volume)
+        except ValueError as exc:
+            reasons.append(str(exc))
     for volume in expected:
         if not any(_identity_key(volume)):
             reasons.append(f"{volume.volume_id}: disk has no stable identity")

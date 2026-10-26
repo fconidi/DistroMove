@@ -13,7 +13,7 @@ from .esp import remove_entry
 from .journal import DEFAULT_LOCK, Journal, Lock, fsync_dir, read_journal
 from .model import SystemSnapshot, VolumeIdentity
 from .probe_parse import loader_of
-from .safety import can_delete_old, confirmation_text
+from .safety import can_delete_old, confirmation_text, partuuid_key
 from .state import MigrationState, load_state, save_state
 
 
@@ -43,7 +43,8 @@ def _pending(journal: Journal) -> list[dict]:
 
 
 def _present(live: SystemSnapshot, partuuid: str) -> bool:
-    return any(item.partuuid.casefold() == partuuid.casefold() for item in live.identities)
+    wanted = partuuid.casefold()
+    return any([partuuid_key(item) == wanted for item in live.identities])
 
 
 def _reconcile(state: MigrationState, root: Path, journal: Journal,

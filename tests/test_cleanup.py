@@ -203,3 +203,21 @@ def test_partition_lookup_converts_512_unit_start_on_4k_disk():
                 "/dev/disk/by-id/disk": "/dev/vdb"}.get(path, path)
     assert _locate(FourK(), state().old_volumes[0], resolve) == (
         "/dev/disk/by-id/disk", 1, f"/dev/disk/by-partuuid/{OLD_PART}")
+
+
+def test_present_refuses_a_live_partition_whose_identity_is_unreadable():
+    from distromove.cleanup import _present
+    snap = live()
+    snap = replace(snap, identities=[replace(snap.identities[0], partuuid=None),
+                                     *snap.identities[1:]])
+    with pytest.raises(ValueError, match="partition identity unreadable"):
+        _present(snap, OLD_PART)
+
+
+def test_delete_stops_when_a_live_partition_identity_is_unreadable(tmp_path):
+    root, s, _, journal, system = setup(tmp_path)
+    system.snapshot = replace(system.snapshot, identities=[
+        replace(system.snapshot.identities[0], partuuid=None), *system.snapshot.identities[1:]])
+    with pytest.raises(ValueError, match="partition identity unreadable"):
+        cleanup(root, s, journal, system)
+    assert not any(call[:1] == ["sgdisk"] for call in system.calls)
