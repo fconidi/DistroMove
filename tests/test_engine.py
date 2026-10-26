@@ -527,3 +527,11 @@ def test_volume_prefix_places_a_separate_boot_volume_inside_the_new_root(tmp_pat
     assert _volume_prefix(tmp_path, tmp_path / "boot") == "boot"
     assert _volume_prefix(tmp_path, tmp_path / "var/lib.d") == "var/lib.d"
     assert _volume_prefix(tmp_path, Path("/elsewhere/top/@")) == ""
+
+
+def test_mounted_device_drops_the_btrfs_subvolume_suffix():
+    from distromove.engine import _mounted_device
+    assert _mounted_device("/dev/vdb1[/@rootfs]") == "/dev/vdb1"
+    assert _mounted_device("/dev/mapper/cryptroot[/@rootfs/sub]") == "/dev/mapper/cryptroot"
+    assert _mounted_device("/dev/vdb1") == "/dev/vdb1"
+    assert _mounted_device("UUID=abcd-1234") == "UUID=abcd-1234"

@@ -517,7 +517,7 @@ class SystemBackend:
                          "--output", "TARGET,SOURCE,FSTYPE"], readonly=True).stdout
             rows = json.loads(raw)["filesystems"]
             if len(rows) == 1 and rows[0]["target"] == str(path):
-                device = rows[0]["source"]
+                device = _mounted_device(rows[0]["source"])
                 observed[mountpoint] = (device[5:] if device.startswith("UUID=") else
                     r.run(["blkid", "-p", "-o", "value", "-s", "UUID", device],
                           readonly=True).stdout.strip())
@@ -600,6 +600,11 @@ class MigrationBackend(Protocol):
     def registration_details(self) -> tuple[str, int, str, str]: ...
     def close(self, r, journal: Journal) -> None: ...
     def unwind(self, r, journal: Journal) -> None: ...
+
+
+def _mounted_device(source: str) -> str:
+    """findmnt prints a btrfs subvolume mount as /dev/vdb1[/@rootfs]; keep the device."""
+    return re.sub(r"\[[^\]]*\]$", "", source)
 
 
 def _volume_prefix(new_root: Path, destination: Path) -> str:
