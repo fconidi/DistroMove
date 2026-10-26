@@ -214,7 +214,10 @@ def migrate(spec: dict) -> dict:
         lock.__exit__(None, None, None)
     return {"ok": result.ok, "phase": result.phase, "bootnum": result.new_bootnum,
             "warnings": result.warnings, "records": counter["records"],
-            "freeze_seconds": result.freeze.seconds if result.freeze else None}
+            "freeze_seconds": result.freeze.seconds if result.freeze else None,
+            "verify_findings": [f"{item.check}: {item.detail}"
+                                for item in result.verify.findings[:10]]
+            if result.verify else []}
 
 
 def delete(spec: dict) -> dict:
