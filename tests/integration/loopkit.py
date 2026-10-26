@@ -60,6 +60,21 @@ class LoopEnv:
         self._undo: list[tuple[str, callable]] = []
         self.mappers: list[str] = []
         self.own_mounts: set[str] = set()
+        self.loop_devices: list[str] = []
+
+    def settle_udev(self) -> None:
+        """Make the udev database agree with the kernel for the loop devices of this test.
+
+        The product reads PARTUUID through lsblk, i.e. from udev; after a partition table
+        change or a process kill the entries can be briefly empty.  Only devices created by
+        this environment are triggered.
+        """
+        for dev in self.loop_devices:
+            nodes = [dev, *sorted(str(p) for p in Path("/dev").glob(Path(dev).name + "p[0-9]*"))]
+            for node in nodes:
+                run("udevadm", "trigger", "--action=change", "--settle", loop_only(node),
+                    check=False)
+        run("udevadm", "settle", check=False)
 
     # ---- bookkeeping
     def on_close(self, label: str, fn) -> None:
@@ -173,6 +188,7 @@ class LoopDisk:
             handle.truncate(size_mib * MIB)
         out = run("losetup", "--find", "--show", "--partscan", self.image).strip()
         self.dev = loop_only(out)
+        env.loop_devices.append(self.dev)
         env.on_close(f"detach {self.dev}", self._detach)
         self.by_id_link: Path | None = None
         if by_id:

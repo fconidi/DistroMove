@@ -807,6 +807,7 @@ def recover(w: World):
     if ended:
         return []
     journal = Journal(w.journal_dir, w.mid, host_root_uuid=w.host_uuid)
+    w.env.settle_udev()
     return reconcile_on_start(Runner(), journal)
 
 
