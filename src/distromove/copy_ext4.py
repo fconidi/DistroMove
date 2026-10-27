@@ -190,10 +190,12 @@ def hot_pass(r: Runner, src: Path | str, dst: Path | str, filters: list[str],
         out = _rsync(r, pair, ["--stats"])
         vanished = False
     except RunnerError as exc:
-        if exc.returncode != 24:
+        if exc.returncode not in (23, 24):
             raise
-        # A live source may rename a file while rsync scans it. The frozen
-        # reconciliation and verification must still complete without errors.
+        # A live source may rename, truncate or delete a file while rsync scans or maps it
+        # (exit 24, or exit 23 with read errors). The hot pass only prepares the copy: the
+        # frozen reconciliation, checksum pass and verification must still finish without
+        # any error, so a real fault shows up there and stops the migration.
         out = exc.stdout
         vanished = True
     match = re.search(r"^Number of regular files transferred:\s*([\d,]+)", out, re.M)

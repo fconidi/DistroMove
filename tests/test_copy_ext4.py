@@ -111,18 +111,44 @@ def test_hot_pass_continues_after_vanished_source_file(tmp_path, monkeypatch):
     assert result.files == 2 and result.vanished_source_files
 
 
-def test_hot_pass_rejects_partial_transfer_error(tmp_path, monkeypatch):
+def test_hot_pass_tolerates_a_file_changing_under_rsync(tmp_path, monkeypatch):
+    # a live file truncated while rsync maps it gives exit 23; only the frozen passes decide
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+    stats = "Number of regular files transferred: 2\n"
+
+    def changing(*_args, **_kwargs):
+        raise RunnerError("partial transfer", ["rsync"], 23, stats,
+                          'read errors mapping "/var/tmp/x": No data available (61)')
+
+    monkeypatch.setattr(module, "_rsync", changing)
+    result = hot_pass(Runner(), pair.source, pair.destination, [])
+    assert result.files == 2 and result.vanished_source_files
+
+
+def test_hot_pass_rejects_other_rsync_failures(tmp_path, monkeypatch):
     from distromove import copy_ext4 as module
     pair = pair_in(tmp_path)
 
-    def partial(*_args, **_kwargs):
-        raise RunnerError("partial transfer", ["rsync"], 23,
-                          "Number of regular files transferred: 2\n", "file has vanished")
+    def broken(*_args, **_kwargs):
+        raise RunnerError("rsync failed", ["rsync"], 11, "", "error in file IO")
 
-    monkeypatch.setattr(module, "_rsync", partial)
+    monkeypatch.setattr(module, "_rsync", broken)
     with pytest.raises(RunnerError) as caught:
         hot_pass(Runner(), pair.source, pair.destination, [])
-    assert caught.value.returncode == 23
+    assert caught.value.returncode == 11
+
+
+def test_hot_pass_without_transfer_report_is_not_accepted_after_exit_23(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+
+    def no_report(*_args, **_kwargs):
+        raise RunnerError("partial transfer", ["rsync"], 23, "", "permission denied")
+
+    monkeypatch.setattr(module, "_rsync", no_report)
+    with pytest.raises(ValueError):
+        hot_pass(Runner(), pair.source, pair.destination, [])
 
 
 def test_frozen_reconcile_rejects_vanished_source_file(tmp_path, monkeypatch):
