@@ -13,7 +13,7 @@ from .esp import remove_entry
 from .journal import DEFAULT_LOCK, Journal, Lock, fsync_dir, read_journal
 from .model import SystemSnapshot, VolumeIdentity
 from .probe_parse import loader_of
-from .safety import can_delete_old, confirmation_text, partuuid_key
+from .safety import _identity_key, can_delete_old, confirmation_text, partuuid_key
 from .state import MigrationState, load_state, save_state
 
 
@@ -42,9 +42,24 @@ def _pending(journal: Journal) -> list[dict]:
                 "delete_old_partition", "delete_old_uefi", "delete_old_esp"}]
 
 
-def _present(live: SystemSnapshot, partuuid: str) -> bool:
-    wanted = partuuid.casefold()
-    return any([partuuid_key(item) == wanted for item in live.identities])
+def _present(live: SystemSnapshot, expected: VolumeIdentity) -> bool:
+    """Whether the planned partition is still on the disk.
+
+    An unreadable PARTUUID elsewhere says nothing about this one. One on the same
+    disk and start sector leaves the answer undetermined, which is an error here,
+    never absence.
+    """
+    wanted = partuuid_key(expected)
+    for item in live.identities:
+        value = item.partuuid
+        if isinstance(value, str) and value.strip():
+            if value.casefold() == wanted:
+                return True
+        elif (item.start_sectors == expected.start_sectors
+              and any(a and b and a.casefold() == b.casefold() for a, b in
+                      zip(_identity_key(item), _identity_key(expected)))):
+            partuuid_key(item)
+    return False
 
 
 def _reconcile(state: MigrationState, root: Path, journal: Journal,
@@ -73,7 +88,7 @@ def _reconcile(state: MigrationState, root: Path, journal: Journal,
             if (target is None or identity.get("disk_wwn") != target.disk_wwn
                     or identity.get("start_sectors") != target.start_sectors):
                 raise ValueError("pending partition deletion has a different identity")
-            absent = bool(target and not _present(live, partuuid))
+            absent = bool(target and not _present(live, target))
             if absent and any(v.start_sectors == target.start_sectors and
                               (v.disk_wwn, v.disk_serial, v.disk_by_id) ==
                               (target.disk_wwn, target.disk_serial, target.disk_by_id)
@@ -175,6 +190,9 @@ def _remove_partition(r, volume: VolumeIdentity, resolve: Callable[[str], str]) 
     disk, number, _ = _locate(r, volume, resolve)
     r.run(["sgdisk", f"--delete={number}", disk])
     r.run(["partprobe", disk])
+    # Until udev has processed the change the kernel can still list the partition,
+    # by then without the PARTUUID its GPT entry carried.
+    r.run(["udevadm", "settle"])
 
 
 def delete_old_system(r, state: MigrationState, *, erase_luks_header: bool,
@@ -244,7 +262,7 @@ def delete_old_system(r, state: MigrationState, *, erase_luks_header: bool,
                                                           "disk_wwn": volume.disk_wwn,
                                                           "start_sectors": volume.start_sectors})
             _remove_partition(r, volume, resolve)
-            if _present(recheck(), volume.partuuid):
+            if _present(recheck(), volume):
                 raise RuntimeError("old partition remains after table update")
             state = _mark(state, root, token)
             journal.done(op, "removed")
@@ -258,7 +276,7 @@ def delete_old_system(r, state: MigrationState, *, erase_luks_header: bool,
                                                       "disk_wwn": state.old_esp.disk_wwn,
                                                       "start_sectors": state.old_esp.start_sectors})
                 _remove_partition(r, state.old_esp, resolve)
-                if _present(recheck(), state.old_esp.partuuid):
+                if _present(recheck(), state.old_esp):
                     raise RuntimeError("old ESP remains after table update")
                 state = _mark(state, root, token)
                 journal.done(op, "removed")

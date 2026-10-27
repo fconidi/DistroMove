@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.16
+
+- Wait for the kernel to drop a deleted partition before checking that it is gone, and judge that check only by the identity of the partition in question.
+
 ## 0.1.15
 
 - Accept the typed deletion confirmation when only blank space around it differs, and say so when the text itself does not match.

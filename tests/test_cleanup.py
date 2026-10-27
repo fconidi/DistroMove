@@ -64,7 +64,7 @@ class System:
                                                   if k != OLD_ESP})
         elif argv[:2] == ["cryptsetup", "luksErase"]:
             pass
-        elif argv[:1] in (["update-grub"], ["partprobe"]):
+        elif argv[:1] in (["update-grub"], ["partprobe"]) or argv == ["udevadm", "settle"]:
             pass
         else:
             raise AssertionError(argv)
@@ -205,13 +205,35 @@ def test_partition_lookup_converts_512_unit_start_on_4k_disk():
         "/dev/disk/by-id/disk", 1, f"/dev/disk/by-partuuid/{OLD_PART}")
 
 
-def test_present_refuses_a_live_partition_whose_identity_is_unreadable():
+def test_present_refuses_an_unreadable_identity_at_the_sector_it_asks_about():
     from distromove.cleanup import _present
     snap = live()
     snap = replace(snap, identities=[replace(snap.identities[0], partuuid=None),
                                      *snap.identities[1:]])
     with pytest.raises(ValueError, match="partition identity unreadable"):
-        _present(snap, OLD_PART)
+        _present(snap, state().old_volumes[0])
+
+
+def test_present_ignores_an_unreadable_identity_of_another_partition():
+    from distromove.cleanup import _present
+    old = state().old_volumes[0]
+    snap = live()
+    # The partition asked about is gone; an unrelated one is momentarily unreadable.
+    others = [replace(item, partuuid=None) if item.start_sectors != old.start_sectors
+              else None for item in snap.identities]
+    snap = replace(snap, identities=[item for item in others if item is not None])
+    assert _present(snap, old) is False
+
+
+def test_remove_partition_waits_for_the_kernel_to_drop_the_partition(tmp_path):
+    from distromove.cleanup import _remove_partition
+    system = System(live())
+    _remove_partition(system, state().old_volumes[0],
+                      lambda path: {f"/dev/disk/by-partuuid/{OLD_PART}": "/dev/vdb1",
+                                    "/dev/disk/by-id/disk": "/dev/vdb"}.get(path, path))
+    tail = [call for call in system.calls if call[0] in {"sgdisk", "partprobe", "udevadm"}]
+    assert tail == [["sgdisk", "--delete=1", "/dev/disk/by-id/disk"],
+                    ["partprobe", "/dev/disk/by-id/disk"], ["udevadm", "settle"]]
 
 
 def test_delete_stops_when_a_live_partition_identity_is_unreadable(tmp_path):
