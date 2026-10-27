@@ -1,5 +1,5 @@
 from distromove.gui import (database_warnings, deletion_details, describe_plan,
-                            gpt_init_prompt, validate_form)
+                            gpt_init_prompt, pause_commands, validate_form)
 
 
 def form(**changes):
@@ -49,6 +49,31 @@ def test_database_warnings_postgres_docker():
     assert len(warnings) == 2
     assert "PostgreSQL" in warnings[0]
     assert "Docker" in warnings[1]
+
+
+def test_pause_commands_cover_detected_writers_and_their_restart():
+    lines = pause_commands([
+        "SQLite: /var/lib/fail2ban/fail2ban.sqlite3 (fail2ban-server)",
+        "SQLite: /var/lib/vnstat/vnstat.db (vnstatd)",
+        "SQLite: /home/user/.local/share/Nextcloud/sync.db (nextcloud)",
+        "Docker", "PostgreSQL",
+    ])
+
+    assert "sudo systemctl stop fail2ban" in lines
+    assert "sudo systemctl start fail2ban" in lines
+    assert "sudo systemctl stop vnstat" in lines
+    assert "sudo systemctl start vnstat" in lines
+    assert "nextcloud --quit" in lines
+    assert "nextcloud --background" in lines
+    assert "sudo systemctl stop docker.service docker.socket" in lines
+    assert "sudo systemctl start docker.socket docker.service" in lines
+    assert "sudo systemctl stop postgresql" in lines
+    assert "sudo systemctl start postgresql" in lines
+    assert all("mariadb" not in line for line in lines)
+
+
+def test_pause_commands_do_not_confuse_a_database_path_with_its_writer():
+    assert pause_commands(["SQLite: /home/user/Nextcloud/app.db (firefox)"]) == []
 
 
 def test_delete_page_lists_all_old_partitions():

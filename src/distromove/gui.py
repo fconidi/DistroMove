@@ -71,6 +71,28 @@ def database_warnings(activity: list[str]) -> list[str]:
     return [f"{name}: {tr('database_notice')}" for name in activity]
 
 
+def pause_commands(activity: list[str]) -> list[str]:
+    """Commands for known writers; each stop is followed by its restart."""
+    names = {item.lower() for item in activity if not item.startswith("SQLite:")}
+    writers = {item.rsplit("(", 1)[-1].removesuffix(")").lower()
+               for item in activity if item.startswith("SQLite:") and "(" in item}
+    pairs = []
+    if "fail2ban-server" in writers:
+        pairs.append(("sudo systemctl stop fail2ban", "sudo systemctl start fail2ban"))
+    if "vnstatd" in writers:
+        pairs.append(("sudo systemctl stop vnstat", "sudo systemctl start vnstat"))
+    if "nextcloud" in writers:
+        pairs.append(("nextcloud --quit", "nextcloud --background"))
+    if "docker" in names:
+        pairs.append(("sudo systemctl stop docker.service docker.socket",
+                      "sudo systemctl start docker.socket docker.service"))
+    if "postgresql" in names:
+        pairs.append(("sudo systemctl stop postgresql", "sudo systemctl start postgresql"))
+    if "mysql/mariadb" in names:
+        pairs.append(("sudo systemctl stop mariadb", "sudo systemctl start mariadb"))
+    return [command for pair in pairs for command in pair]
+
+
 def deletion_details(state: dict, *, delete_old_esp: bool = False,
                      language: str = "en") -> list[str]:
     done = set(state.get("deletion_done", []))
@@ -384,6 +406,16 @@ def launch() -> int:
             box = self.source_details
             self.clear(box)
             src = self.base_source
+            self.heading(box, "pause_services")
+            box.pack_start(self.label(tr("pause_intro"), style="note"), False, False, 0)
+            commands = pause_commands(self.activity)
+            for stop, start in zip(commands[::2], commands[1::2]):
+                box.pack_start(self.label(f"{tr('pause_stop')}: {stop}"), False, False, 0)
+                box.pack_start(self.label(f"{tr('pause_start')}: {start}"), False, False, 0)
+            if "nextcloud --quit" in commands:
+                box.pack_start(self.label(tr("pause_nextcloud"), style="note"), False, False, 0)
+            if "Docker" in self.activity:
+                box.pack_start(self.label(tr("pause_docker"), style="note"), False, False, 0)
             box.pack_start(self.label(f"{tr('source_type')}: {src['kind']} · {src['os_id']}"), False, False, 0)
             encrypted = [v for v in src["volumes"] if v["luks"]]
             box.pack_start(self.label(f"{tr('encrypted')}: {len(encrypted)}"), False, False, 0)

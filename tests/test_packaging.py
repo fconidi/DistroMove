@@ -60,8 +60,11 @@ def test_deb_directory_and_launcher_permissions(package):
 
 def test_no_internal_words_in_package_or_readme(package, tmp_path):
     subprocess.run(["dpkg-deb", "--extract", str(package), str(tmp_path)], check=True)
-    words = re.compile(r"(?i)\b(?:Claude|Codex|Nextcloud|NUC)\b|~/work|"
+    words = re.compile(r"(?i)\b(?:Claude|Codex|NUC)\b|~/work|"
+                       r"(?:~|/root|/home/[^/\s]+)/Nextcloud(?:/|\b)|"
                        r"\b(?:AGENTS|CLAUDE|HANDOFF|MEMORY|SPEC)\.md\b")
+    assert words.search("/home/user/Nextcloud/private")
+    assert not words.search("nextcloud --quit")
     internal_names = re.compile(r"(?i)(?:^|/)(?:\.agents|\.codex|\.claude|\.remember)(?:/|$)")
     for path in tmp_path.rglob("*"):
         if path.is_file():
