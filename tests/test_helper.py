@@ -257,3 +257,15 @@ def test_plan_refuses_unrecognized_disk_signatures(monkeypatch):
         helper._planned({'targets': [{'volume_id': 'root', 'disk': '/dev/new',
                                       'size_bytes': 10 * 1024**3}],
                           'esp': {'mode': 'reuse'}}, object())
+
+
+def test_planned_source_ignores_usage_counters_but_not_identity():
+    from distromove.helper import _stable_source
+    planned = {"volumes": [{"volume_id": "root", "fs_uuid": "u1", "used_bytes": 10,
+                            "apparent_bytes": 9, "used_inodes": 5}], "secure_boot": False}
+    busy = {"volumes": [{"volume_id": "root", "fs_uuid": "u1", "used_bytes": 99,
+                         "apparent_bytes": 98, "used_inodes": 50}], "secure_boot": False}
+    assert _stable_source(planned) == _stable_source(busy)
+    other = {"volumes": [{"volume_id": "root", "fs_uuid": "u2", "used_bytes": 10,
+                          "apparent_bytes": 9, "used_inodes": 5}], "secure_boot": False}
+    assert _stable_source(planned) != _stable_source(other)

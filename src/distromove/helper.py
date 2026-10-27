@@ -311,6 +311,19 @@ def _planned(data: dict, r: Runner) -> dict:
             "plan": {**asdict(plan), "disks": disks}}
 
 
+_USAGE_FIELDS = frozenset({"used_bytes", "apparent_bytes", "used_inodes"})
+
+
+def _stable_source(value):
+    """The source description without usage counters, which move on any live system."""
+    if isinstance(value, dict):
+        return {key: _stable_source(item) for key, item in value.items()
+                if key not in _USAGE_FIELDS}
+    if isinstance(value, list):
+        return [_stable_source(item) for item in value]
+    return value
+
+
 def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
     migration_id = data.get("migration_id")
     if not isinstance(migration_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", migration_id):
@@ -327,7 +340,7 @@ def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
             raise ValueError("mount selection changed")
         source = discover_source(r, extra_mounts=include)
         fresh_source = json.loads(json.dumps(asdict(source)))
-        if data.get("source") != fresh_source:
+        if _stable_source(data.get("source")) != _stable_source(fresh_source):
             raise ValueError("source changed since planning")
         if current_journal(DEFAULT_ROOT, source.running_root_uuid) is not None:
             raise ValueError("unfinished migration requires recovery")
