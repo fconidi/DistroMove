@@ -259,6 +259,11 @@ def create_partitions(r: Runner, plan: MigrationPlan,
             raise KernelTableStale(f"kernel partition view did not match disk on {disk}")
         for part, op_id in zip(parts, intents):
             row = rows[part.volume_id]
+            # Free space can still hold the header of a filesystem that lived
+            # there before.  Inside a partition this program has just created,
+            # and proved to be the planned one, such a header is debris: it
+            # would refuse the format and hide the partition from rollback.
+            r.run(["wipefs", "--all", row["node"]])
             created[part.volume_id] = CreatedPartition(
                 part.volume_id, row["node"], part.planned.partuuid,
                 part.start_sectors, part.size_sectors,

@@ -124,6 +124,8 @@ class PartitionRunner:
             assert input is not None
             self.written = True
             out = ""
+        elif argv[:2] == ["wipefs", "--all"]:
+            out = ""
         elif argv[0] in {"partprobe", "udevadm"}:
             out = ""
         else:
@@ -462,3 +464,15 @@ def test_every_mutating_call_has_prior_journal_intent(tmp_path):
     mutations = [argv for argv, readonly in r.calls if not readonly]
     assert len(intents) == len(mutations)
     assert [e["op"] for e in intents] == ["create_subvolume", "set_default_subvolume"]
+
+
+def test_new_partition_is_wiped_of_signatures_left_in_its_area(tmp_path):
+    # Reusing freed space keeps the old LUKS header in the new partition, which
+    # would both refuse the format and hide the partition from rollback.
+    r = PartitionRunner()
+    create_partitions(r, partition_plan(r), Journal(tmp_path / "j", host_root_uuid="host-root"))
+    wipes = [argv for argv, _, _ in r.calls if argv[:2] == ["wipefs", "--all"]]
+    assert wipes == [["wipefs", "--all", NEW["node"]]]
+    order = [argv for argv, _, _ in r.calls]
+    assert order.index(["wipefs", "--all", NEW["node"]]) > order.index(
+        ["sfdisk", "--append", "--lock", "--no-reread", DISK])

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10
+
+- Clear filesystem headers left in free space from a previous partition, which refused the format of a new encrypted volume.
+
 ## 0.1.9
 
 - Remove the loader directory installed on a reused EFI system partition when a migration is rolled back, so the next attempt is not refused.
