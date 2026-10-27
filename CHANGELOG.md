@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- Keep the failed command, its exit code and its output in a root-only log, so a stopped migration can be explained.
+
 ## 0.1.5
 
 - Name the failed command and its exit code when an external command stops a migration.

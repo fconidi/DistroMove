@@ -309,3 +309,32 @@ def test_migration_result_carries_the_error_kind_when_it_stops():
         'bootnum': None, 'error': 'UnsupportedKdf'}
     done = MigrationResult(True, None, '0002', None, [], 'activated')
     assert 'error' not in helper._migration_result(done)
+
+
+def test_record_failure_keeps_the_command_and_its_output_for_root_only(tmp_path):
+    import os
+    import stat
+    from distromove.runner import RunnerError
+
+    failure = RunnerError("command failed (1): sfdisk --append /dev/nvme0n1",
+                          ["sfdisk", "--append", "--lock", "/dev/nvme0n1"], 1,
+                          "old situation", "Device or resource busy")
+    helper.record_failure(failure, op='migrate', root=tmp_path)
+    path = tmp_path / 'last-error.log'
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    text = path.read_text()
+    assert 'migrate' in text and 'RunnerError' in text
+    assert 'sfdisk --append --lock /dev/nvme0n1' in text
+    assert 'exit code: 1' in text
+    assert 'Device or resource busy' in text
+
+
+def test_record_failure_of_a_plain_error_names_only_its_kind(tmp_path):
+    helper.record_failure(ValueError('source changed since planning'), op='plan',
+                          root=tmp_path)
+    text = (tmp_path / 'last-error.log').read_text()
+    assert 'ValueError' in text and 'source changed' not in text
+
+
+def test_record_failure_never_raises_when_the_directory_is_missing(tmp_path):
+    helper.record_failure(ValueError('x'), op='probe', root=tmp_path / 'absent')

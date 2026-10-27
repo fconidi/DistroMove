@@ -650,7 +650,8 @@ def error_fields(exc: BaseException) -> dict:
 def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
                   emit: Callable[[dict], None], journal: Journal, lock: Lock,
                   *, context: MigrationContext | None = None,
-                  backend: MigrationBackend | None = None) -> MigrationResult:
+                  backend: MigrationBackend | None = None,
+                  on_failure: Callable[[BaseException], None] | None = None) -> MigrationResult:
     """Run one migration.  Firmware registration is the last mutating step.
 
     Once PENDING_ACTIVATION is durable, a failure is a reconciliation problem;
@@ -741,6 +742,8 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
     except Exception as exc:
         # An exception never serialises secret data to the event stream.
         warnings.append(type(exc).__name__)
+        if on_failure is not None:
+            on_failure(exc)
         _event(emit, "error", failed_phase=phase, **error_fields(exc))
         if pending:
             return MigrationResult(False, report, bootnum, freeze, warnings,

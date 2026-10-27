@@ -546,3 +546,28 @@ def test_failed_command_and_exit_code_reach_the_error_event(tmp_path):
     assert error_fields(failure) == {"error": "RunnerError", "command": "sfdisk",
                                      "exit_code": 1}
     assert error_fields(ValueError("plain")) == {"error": "ValueError"}
+
+
+def test_on_failure_receives_the_exception_that_stopped_the_run(tmp_path):
+    from distromove.engine import run_migration
+    from distromove.journal import Journal, Lock
+
+    class Failing:
+        new_root = tmp_path / "new"
+
+        def preflight(self, *args):
+            raise RuntimeError("boom")
+
+        def release_snapshots(self, *args):
+            pass
+
+        def unwind(self, *args):
+            pass
+
+    seen = []
+    journal = Journal(tmp_path / "j", host_root_uuid="host-root")
+    result = run_migration(None, None, None, None, lambda event: None, journal,
+                           Lock(tmp_path / "lock"), backend=Failing(),
+                           on_failure=seen.append)
+    assert result.ok is False and result.phase == "preflight"
+    assert [type(exc).__name__ for exc in seen] == ["RuntimeError"]

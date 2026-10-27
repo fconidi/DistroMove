@@ -35,6 +35,13 @@ After migration completes, reboot into the new system and confirm that its
 volumes and data are present. Only then use **Delete old system**. The removal
 screen lists the exact old partitions and requires the full confirmation text.
 
+## When a migration stops
+
+The progress log names the phase that stopped the run and, when an external
+command refused, its name and exit code. The full output of that command is
+kept for the administrator in `/var/lib/distromove/last-error.log`, which only
+root can read. Check the system before retrying.
+
 ## License
 
 GNU General Public License version 3; see `LICENSE` in the source tree or

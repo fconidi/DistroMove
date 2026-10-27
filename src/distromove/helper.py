@@ -6,10 +6,12 @@ following frame and is passed as bytes only to the storage operation.
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from datetime import datetime
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 from types import SimpleNamespace
 from typing import BinaryIO, Callable
@@ -26,7 +28,7 @@ from .model import LoaderInfo, PlannedIdentity
 from .probe_parse import loader_of
 from .journal import DEFAULT_ROOT, Journal, Lock, current_journal, read_journal, recover
 from .probe import collect_snapshot, database_activity, discover_source
-from .runner import Runner
+from .runner import Runner, RunnerError
 from .state import load_state
 from .safety import can_delete_old, confirmation_text
 
@@ -82,10 +84,39 @@ def _request(stream: BinaryIO) -> tuple[dict, bytes | None]:
     return data, secret
 
 
+def record_failure(exc: BaseException, *, op: str, root: Path = DEFAULT_ROOT) -> None:
+    """Keep the last failure where only root can read it.
+
+    The control channel carries exception types alone, which is not enough to
+    tell why a command refused.  A failed command, its exit code and its output
+    are written here instead; the Runner has already removed the passphrase.
+    A diagnostic must never replace the outcome, so every error is swallowed.
+    """
+    lines = [f"time: {datetime.now().astimezone().isoformat(timespec='seconds')}",
+             f"operation: {op}", f"error: {type(exc).__name__}"]
+    if isinstance(exc, RunnerError):
+        if exc.argv:
+            lines.append(f"command: {shlex.join(exc.argv)}")
+        lines.append(f"exit code: {exc.returncode}")
+        for name, text in (("stdout", exc.stdout), ("stderr", exc.stderr)):
+            if text:
+                lines.append(f"{name}:\n" + "\n".join(text.splitlines()[-20:]))
+    try:
+        fd = os.open(root / "last-error.log",
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, ("\n".join(lines) + "\n").encode("utf-8", "replace"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def serve(stdin: BinaryIO, stdout: BinaryIO,
           operation: Callable[[dict, bytes | None, Callable[[dict], None]], dict],
           *, before: Callable[[], None] | None = None) -> int:
     """Process one request; expose only exception types on the control channel."""
+    data = None
     try:
         data, secret = _request(stdin)
         if before is not None:
@@ -95,6 +126,7 @@ def serve(stdin: BinaryIO, stdout: BinaryIO,
         return 0 if result.get("ok") is True else 1
     except Exception as exc:
         # Exception messages can contain command output or user supplied text.
+        record_failure(exc, op=str((data or {}).get("op", "unknown")))
         emit_event(stdout, {"ok": False, "error": type(exc).__name__})
         return 1
 
@@ -396,7 +428,8 @@ def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
             raise
         context = replace(context, btrfs_source_tops=tops)
         result = run_migration(plan, source, Secrets(secret), r, emit, journal, lock,
-                               context=context)
+                               context=context,
+                               on_failure=lambda exc: record_failure(exc, op="migrate"))
         return _migration_result(result)
 
 
