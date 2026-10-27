@@ -472,7 +472,10 @@ def _btrfs(r: Runner, root: Path, mp: str, mounts: list[dict],
     if n != 1:
         raise Unsupported(f"the btrfs filesystem of {mp} spans {n} devices; only one is supported")
     fs_uuid = m.group(1) if (m := re.search(r"uuid:\s*([0-9A-Fa-f-]{36})", show)) else ""
-    listing = _out(r, ["btrfs", "subvolume", "list", mp])
+    # Without -a, btrfs may report paths relative to the mounted subvolume.
+    # A temporary top-level mount then makes those paths look reachable at
+    # the wrong location (for example @/mnt becomes <top>/mnt).
+    listing = _out(r, ["btrfs", "subvolume", "list", "-a", mp])
     listed = [(int(m.group(1)), subvol_name(m.group(2))) for m in re.finditer(
         r"^ID (\d+) gen \d+ top level \d+ path (.+?)\s*$", listing, re.M)]
     default_m = re.match(r"\s*ID (\d+)", _out(r, ["btrfs", "subvolume", "get-default", mp]))

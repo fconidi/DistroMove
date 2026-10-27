@@ -83,7 +83,7 @@ def props(path, inode=""):
 
 
 def btrfs_fs(mp, show, listing, default):
-    return {("btrfs", "filesystem", "show", mp): show, ("btrfs", "subvolume", "list", mp): listing,
+    return {("btrfs", "filesystem", "show", mp): show, ("btrfs", "subvolume", "list", "-a", mp): listing,
             ("btrfs", "subvolume", "get-default", mp): default}
 
 
@@ -300,6 +300,29 @@ def test_discover_btrfs_standard(tmp_path):
     assert src.unmigrated_mounts == []
 
 
+def test_btrfs_subvolume_paths_stay_absolute_with_a_top_level_mount(tmp_path):
+    top = "/run/distromove/scratch/source-root"
+    mounts = [
+        {"target": "/", "options": "rw,subvol=/@", "fsroot": "/@"},
+        {"target": top, "options": "rw,subvolid=5,subvol=/", "fsroot": "/"},
+    ]
+    r = FixtureRunner({
+        ("btrfs", "filesystem", "show", "/"): fx("btrfs", "btrfs-show.txt"),
+        ("btrfs", "subvolume", "list", "/"):
+            "ID 256 gen 1 top level 5 path @\nID 276 gen 1 top level 256 path mnt\n",
+        ("btrfs", "subvolume", "list", "-a", "/"):
+            "ID 256 gen 1 top level 5 path <FS_TREE>/@\n"
+            "ID 276 gen 1 top level 256 path @/mnt\n",
+        ("btrfs", "subvolume", "get-default", "/"): "ID 256 gen 1 top level 5 path @\n",
+        **props("/"), **props("/mnt"),
+    })
+
+    btrfs, measured = probe._btrfs(r, tmp_path, "/", mounts, [])
+
+    assert [item.path for item in btrfs.subvolumes] == ["@", "@/mnt"]
+    assert measured == [top, "/", "/mnt"]
+
+
 def test_discover_syslinuxos_root_home_partitions(tmp_path):
     r, root = probe_of("syslinuxos", tmp_path)
     src = discover_source(r, root)
@@ -359,7 +382,7 @@ def test_btrfs_without_subvolumes_counts_the_top_level(tmp_path):
     top = next(m for m in mounts["filesystems"] if m["target"] == "/")
     top.update(options="rw,relatime,ssd,discard=async,space_cache=v2,subvolid=5,subvol=/",
                fsroot="/")
-    over = {FINDMNT: json.dumps(mounts), SWAPON: "", ("btrfs", "subvolume", "list", "/"): "",
+    over = {FINDMNT: json.dumps(mounts), SWAPON: "", ("btrfs", "subvolume", "list", "-a", "/"): "",
             ("btrfs", "subvolume", "get-default", "/"): "ID 5 (FS_TREE)\n"}
     src = discover_source(*probe_of("btrfs", tmp_path, over))
     [v] = src.volumes
