@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import traceback
 from types import SimpleNamespace
 from typing import BinaryIO, Callable
 import uuid
@@ -95,6 +96,11 @@ def record_failure(exc: BaseException, *, op: str, extra: list[str] | None = Non
     """
     lines = [f"time: {datetime.now().astimezone().isoformat(timespec='seconds')}",
              f"operation: {op}", f"error: {type(exc).__name__}"]
+    frames = traceback.extract_tb(exc.__traceback__)
+    if frames:
+        lines.append("trace: " + " -> ".join(
+            f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+            for frame in frames[-4:]))
     if isinstance(exc, RunnerError):
         if exc.argv:
             lines.append(f"command: {shlex.join(exc.argv)}")

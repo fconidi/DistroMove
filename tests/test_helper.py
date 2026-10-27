@@ -336,6 +336,16 @@ def test_record_failure_of_a_plain_error_names_only_its_kind(tmp_path):
     assert 'ValueError' in text and 'source changed' not in text
 
 
+def test_record_failure_locates_raised_error_without_its_message(tmp_path):
+    try:
+        raise ValueError('private detail')
+    except ValueError as failure:
+        helper.record_failure(failure, op='migrate', root=tmp_path)
+    text = (tmp_path / 'last-error.log').read_text()
+    assert 'trace: test_helper.py:' in text
+    assert 'private detail' not in text
+
+
 def test_record_failure_never_raises_when_the_directory_is_missing(tmp_path):
     helper.record_failure(ValueError('x'), op='probe', root=tmp_path / 'absent')
 

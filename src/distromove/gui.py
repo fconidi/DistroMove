@@ -609,6 +609,15 @@ def launch() -> int:
             self.heading(box, "result")
             self.result_label = self.label("")
             box.pack_start(self.result_label, False, False, 0)
+            self.heading(box, "progress")
+            view = Gtk.TextView(buffer=self.log_buffer, editable=False,
+                                cursor_visible=False, monospace=True,
+                                wrap_mode=Gtk.WrapMode.WORD_CHAR)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_min_content_height(240)
+            scroll.add(view)
+            box.pack_start(scroll, True, True, 0)
+            self.result_log_view = view
 
         def _build_delete(self):
             box = self.content["delete_old"]
@@ -751,6 +760,8 @@ def launch() -> int:
             self.result_ok = bool(result.get("ok"))
             self.result_label.set_text(tr("complete") if result.get("ok") else tr("failed"))
             self.show_page("result")
+            self.result_log_view.scroll_to_iter(self.log_buffer.get_end_iter(), 0,
+                                                False, 0, 0)
 
         def refresh_delete(self):
             if not self.state:

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.14
+
+- Show the activity log on the result page, scrolled to the last line.
+- Record where a failure was raised, without its message, in the root error log.
+
 ## 0.1.13
 
 - Put the new boot entry first on firmware whose boot order names devices it has no entry for, which the firmware tool refuses to write back.
