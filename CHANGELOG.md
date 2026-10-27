@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Show the disk containing the reused EFI system partition in the destination form.
+
 ## 0.1.2
 
 - Read Btrfs subvolume paths consistently when a temporary top-level mount is present.

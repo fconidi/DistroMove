@@ -1,5 +1,13 @@
 from distromove.gui import (database_warnings, deletion_details, describe_plan,
-                            gpt_init_prompt, pause_commands, validate_form)
+                            gpt_init_prompt, pause_commands, reused_esp_disk,
+                            validate_form)
+
+
+def test_reused_esp_disk_is_existing_esp_parent_not_first_inventory_disk():
+    source = {"esp": {"partition": {"path": "/dev/nvme0n1p1",
+                                   "parent_disk": "/dev/nvme0n1"}}}
+    disks = [{"path": "/dev/sda"}, {"path": "/dev/nvme0n1"}]
+    assert reused_esp_disk(source, disks) == "/dev/nvme0n1"
 
 
 def form(**changes):

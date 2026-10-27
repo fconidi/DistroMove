@@ -93,6 +93,14 @@ def pause_commands(activity: list[str]) -> list[str]:
     return [command for pair in pairs for command in pair]
 
 
+def reused_esp_disk(source: dict, disks: list[dict]) -> str:
+    """Show the disk that actually contains the existing ESP in the reuse row."""
+    path = source["esp"]["partition"]["parent_disk"]
+    if path not in {disk["path"] for disk in disks}:
+        raise ValueError("existing ESP disk is missing from disk inventory")
+    return path
+
+
 def deletion_details(state: dict, *, delete_old_esp: bool = False,
                      language: str = "en") -> list[str]:
     done = set(state.get("deletion_done", []))
@@ -476,7 +484,7 @@ def launch() -> int:
             self.esp_disk = Gtk.ComboBoxText()
             for item in self.disks:
                 self.esp_disk.append(item["path"], f"{item.get('model') or item['path']} · {item['path']}")
-            self.esp_disk.set_active(0)
+            self.esp_disk.set_active_id(reused_esp_disk(self.source, self.disks))
             box.pack_start(self.esp_disk, False, False, 0)
             self.esp_mode.connect("changed", lambda *_: self.esp_disk.set_sensitive(
                 self.esp_mode.get_active_id() == "new"))
