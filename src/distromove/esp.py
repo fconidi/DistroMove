@@ -161,6 +161,11 @@ def firmware_uses_esp(state: BootState, esp_uuid: str) -> bool:
                match[1].casefold() == esp_uuid.casefold() for line in state.entries.values())
 
 
+def _writable_order(order: tuple[str, ...], entries: dict[str, str]) -> tuple[str, ...]:
+    """What ``efibootmgr -o`` accepts: it refuses a number the firmware has no entry for."""
+    return tuple(number for number in order if number in entries)
+
+
 def _state(r: Runner) -> BootState:
     return parse_efibootmgr(r.run(["efibootmgr", "-v"], readonly=True).stdout)
 
@@ -227,14 +232,18 @@ def register_new_entry(r: Runner, disk: str, part_no: int, loader_path: str,
     journal.done(op, "created", bootnum=number)
     if after.order != before.order:
         raise PartialRegistration(number)
-    wanted = (number, *before.order)
+    wanted = (number, *_writable_order(before.order, after.entries))
     order_op = journal.intend("uefi_order", {"esp_partuuid": esp_partuuid,
                                              "bootnum": number},
                               old_order=before.order, new_order=wanted)
     try:
         r.run(["efibootmgr", "-o", ",".join(wanted)])
         final = _state(r)
-        if final.order != wanted or any(final.entries.get(k) != v for k, v in before.entries.items()):
+        # The firmware may put its own placeholders back; the entries it has
+        # must stand in the requested order, with ours first.
+        if (not final.order or final.order[0] != number
+                or _writable_order(final.order, final.entries) != wanted
+                or any(final.entries.get(k) != v for k, v in before.entries.items())):
             raise RuntimeError("firmware changed another entry or order")
     except Exception as exc:
         raise PartialRegistration(number) from exc

@@ -24,7 +24,8 @@ from .copy_ext4 import CopyPair, _manifest_excludes, volume_filters, copy_ext4
 from .disk import (DestinationMount, GrubCaps, add_keyfile, create_partitions, init_gpt,
                    luks_format, luks_open, make_fs, mount_destination,
                    replicate_subvolumes, validate_crypto_plan)
-from .esp import _partuuid, _state, create_esp, copy_esp, register_new_entry
+from .esp import (_partuuid, _state, _writable_order, create_esp, copy_esp,
+                  register_new_entry)
 from .copy_ext4 import FreezeStats
 from .journal import (AlreadyRunning, Journal, Lock, fsync_dir, open_windows,
                       read_journal, recover)
@@ -905,14 +906,18 @@ def reconcile_on_start(r, journal: Journal, *, state_root: Path | None = None) -
         if matching:
             bootnum = matching[0]
             if not firmware.order or firmware.order[0] != bootnum:
-                wanted = (bootnum, *(item for item in firmware.order if item != bootnum))
+                wanted = (bootnum, *(item for item in
+                                     _writable_order(firmware.order, firmware.entries)
+                                     if item != bootnum))
                 op = journal.intend("reconcile_uefi_order",
                                     {"bootnum": bootnum, "esp_partuuid": state.new_esp.partuuid},
-                                    new_order=wanted)
+                                    observed_order=firmware.order, new_order=wanted)
                 r.run(["efibootmgr", "-o", ",".join(wanted)])
                 after = _state(r)
-                if after.order != wanted or any(after.entries.get(k) != v
-                                                for k, v in firmware.entries.items()):
+                if (not after.order or after.order[0] != bootnum
+                        or _writable_order(after.order, after.entries) != wanted
+                        or any(after.entries.get(k) != v
+                               for k, v in firmware.entries.items())):
                     raise RuntimeError("firmware order was not applied")
                 journal.done(op, "ordered")
         elif state.phase == "ACTIVATED":

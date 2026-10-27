@@ -237,6 +237,35 @@ def test_pending_state_activates_after_booting_new_root(tmp_path, monkeypatch):
     assert load_state(backend.new_root, "new-root").phase == "ACTIVATED"
 
 
+def test_reconcile_orders_without_the_numbers_that_have_no_entry(tmp_path, monkeypatch):
+    import distromove.engine as engine
+    backend = Backend(tmp_path / "new", fail="register_entry")
+    _, _, journal = execute(tmp_path, backend)
+    live = SimpleNamespace(running_root_uuid="old-root", mounts=[], mappers=[])
+    entries = {"0001": "Boot0001* other\tHD(1,GPT,part-old-esp,0x800,0x1000)/File(\\EFI\\other\\shimx64.efi)",
+               "0007": "Boot0007* distromove\tHD(1,GPT,part-new-esp,0x800,0x1000)/File(\\EFI\\distromove\\grubx64.efi)"}
+    # 2002 is a firmware placeholder: in the order, without an entry of its own.
+    views = [BootState(("0001", "2002", "0007"), entries, "0001"),
+             BootState(("0007", "0001", "2002"), entries, "0001")]
+    calls = []
+
+    class Firmware:
+        def run(self, argv, **kwargs):
+            calls.append(list(argv))
+
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: live)
+    monkeypatch.setattr(engine, "_partuuid", lambda r, disk, number: "part-new-esp")
+    monkeypatch.setattr(engine, "loader_of", lambda line:
+                        ("part-new-esp", "\\EFI\\distromove\\grubx64.efi") if "distromove" in line
+                        else ("part-old-esp", "\\EFI\\other\\shimx64.efi"))
+    monkeypatch.setattr(engine, "_state", lambda r: views.pop(0))
+    monkeypatch.setattr(engine, "_release_journal_resources", lambda *args: live)
+    actions = reconcile_on_start(Firmware(), journal)
+    assert ["efibootmgr", "-o", "0007,0001"] in calls
+    assert actions[-1] == engine.Action("activated", "0007")
+    assert load_state(backend.new_root, "new-root").phase == "ACTIVATED"
+
+
 def test_pending_unmounted_state_is_never_rolled_back(tmp_path, monkeypatch):
     import distromove.engine as engine
     backend = Backend(tmp_path / "new", fail="register_entry")

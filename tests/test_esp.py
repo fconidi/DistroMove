@@ -79,6 +79,11 @@ class FirmwareRunner:
         elif argv[:2] == ["efibootmgr", "-o"]:
             if self.fail_order:
                 raise RuntimeError("firmware rejected order")
+            known = set(parse_efibootmgr(self.run(["efibootmgr", "-v"]).stdout).entries)
+            missing = [item for item in argv[2].split(",") if item not in known]
+            if missing:
+                # efibootmgr -o exits 8: "entry <n> does not exist".
+                raise RuntimeError(f"entry {missing[0]} does not exist")
             self.ordered = True
         else:
             raise AssertionError(argv)
@@ -94,13 +99,14 @@ def test_new_entry_first_others_kept_windows_untouched(tmp_path):
     assert ["efibootmgr", "--create-only", "--disk", "/dev/nvme0n1", "--part", "3", "--loader", "\\EFI\\moved\\shimx64.efi", "--label", "DistroMove"] in r.calls
 
 
-def test_new_entry_prepends_to_an_order_holding_firmware_placeholders(tmp_path):
+def test_new_entry_orders_without_the_numbers_that_have_no_entry(tmp_path):
     r = FirmwareRunner(FIXTURE.read_text().replace("BootOrder: 0001,0000,0002",
                                                    "BootOrder: 0001,0000,0002,2002,2004"))
     j = Journal(tmp_path / "journal", host_root_uuid="host")
     number = register_new_entry(r, "/dev/nvme0n1", 3, "\\EFI\\moved\\shimx64.efi", "DistroMove", j)
     assert number == "0003"
-    assert ["efibootmgr", "-o", "0003,0001,0000,0002,2002,2004"] in r.calls
+    assert ["efibootmgr", "-o", "0003,0001,0000,0002"] in r.calls
+    assert not any("2002" in call[-1] for call in r.calls if call[:2] == ["efibootmgr", "-o"])
 
 
 def test_partial_registration_reported(tmp_path):

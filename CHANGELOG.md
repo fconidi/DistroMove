@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.13
+
+- Put the new boot entry first on firmware whose boot order names devices it has no entry for, which the firmware tool refuses to write back.
+
 ## 0.1.12
 
 - Create the new boot entry on firmware whose boot order lists devices it has no entry for, which stopped a completed and verified migration before registration.
