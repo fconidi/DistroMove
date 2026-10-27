@@ -130,6 +130,8 @@ def event_text(event: dict) -> str:
     if phase != "error":
         return phase
     failed, kind = event.get("failed_phase"), event.get("error")
+    if kind and event.get("command"):
+        kind = f"{kind}: {event['command']} exit {event.get('exit_code')}"
     detail = f"{failed} ({kind})" if failed and kind else failed or kind
     return f"error: {detail}" if detail else "error"
 

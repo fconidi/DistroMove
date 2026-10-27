@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Name the failed command and its exit code when an external command stops a migration.
+
 ## 0.1.4
 
 - Recognise GRUB's ability to open an encrypted boot volume on systems where XTS support is built into GRUB itself, instead of refusing the migration.

@@ -116,3 +116,9 @@ def test_failure_detail_prefers_the_error_over_the_phase():
     assert failure_detail({"ok": False, "phase": "copy"}, None) == "copy"
     assert failure_detail(None, "RuntimeError") == "RuntimeError"
     assert failure_detail(None, None) == "unknown"
+
+
+def test_event_text_names_the_failed_command_and_its_exit_code():
+    assert event_text({"phase": "error", "failed_phase": "create_storage",
+                       "error": "RunnerError", "command": "sfdisk",
+                       "exit_code": 1}) == "error: create_storage (RunnerError: sfdisk exit 1)"

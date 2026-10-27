@@ -32,6 +32,7 @@ from .layout import (MigrationPlan, SpaceWatch, assert_tables_unchanged,
 from .model import CreatedPartition, LoaderInfo, SnapshotRef, Source, UuidMap
 from .probe import check_tools, collect_snapshot, discover_source
 from .probe_parse import loader_of
+from .runner import RunnerError
 from .state import MigrationState, load_state, save_state, state_from_record
 from .swap import SwapMount, SwapPlan, make_swaps
 from .system_config import (apply_configs, install_crypt_hooks,
@@ -633,6 +634,19 @@ def _event(emit: Callable[[dict], None], phase: str, **fields) -> None:
         pass
 
 
+def error_fields(exc: BaseException) -> dict:
+    """What a failure may say: its kind and, for a command, its name and exit code.
+
+    Command names and exit codes are public; the output, which can carry file
+    names or secret input, stays out of the event stream.
+    """
+    fields = {"error": type(exc).__name__}
+    if isinstance(exc, RunnerError) and exc.argv:
+        fields["command"] = exc.argv[0]
+        fields["exit_code"] = exc.returncode
+    return fields
+
+
 def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
                   emit: Callable[[dict], None], journal: Journal, lock: Lock,
                   *, context: MigrationContext | None = None,
@@ -727,7 +741,7 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
     except Exception as exc:
         # An exception never serialises secret data to the event stream.
         warnings.append(type(exc).__name__)
-        _event(emit, "error", failed_phase=phase, error=type(exc).__name__)
+        _event(emit, "error", failed_phase=phase, **error_fields(exc))
         if pending:
             return MigrationResult(False, report, bootnum, freeze, warnings,
                                    "pending_reconciliation")

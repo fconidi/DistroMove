@@ -535,3 +535,14 @@ def test_mounted_device_drops_the_btrfs_subvolume_suffix():
     assert _mounted_device("/dev/mapper/cryptroot[/@rootfs/sub]") == "/dev/mapper/cryptroot"
     assert _mounted_device("/dev/vdb1") == "/dev/vdb1"
     assert _mounted_device("UUID=abcd-1234") == "UUID=abcd-1234"
+
+
+def test_failed_command_and_exit_code_reach_the_error_event(tmp_path):
+    from distromove.engine import error_fields
+    from distromove.runner import RunnerError
+
+    failure = RunnerError("command failed (1): sfdisk --append --lock /dev/nvme0n1",
+                          ["sfdisk", "--append", "--lock", "/dev/nvme0n1"], 1)
+    assert error_fields(failure) == {"error": "RunnerError", "command": "sfdisk",
+                                     "exit_code": 1}
+    assert error_fields(ValueError("plain")) == {"error": "ValueError"}
