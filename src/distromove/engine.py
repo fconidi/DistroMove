@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Callable, Protocol
 import os
+import shutil
 import re
 
 from .cleanup import _locate
@@ -25,7 +26,8 @@ from .disk import (DestinationMount, GrubCaps, add_keyfile, create_partitions, i
                    replicate_subvolumes, validate_crypto_plan)
 from .esp import _partuuid, _state, create_esp, copy_esp, register_new_entry
 from .copy_ext4 import FreezeStats
-from .journal import AlreadyRunning, Journal, Lock, open_windows, read_journal, recover
+from .journal import (AlreadyRunning, Journal, Lock, fsync_dir, open_windows,
+                      read_journal, recover)
 from .safety import partuuid_key
 from .layout import (MigrationPlan, SpaceWatch, assert_tables_unchanged,
                      estimate_min_bytes, fingerprint_tables, scan_disk)
@@ -969,6 +971,30 @@ def _live_partuuid(volume) -> str:
         raise RuntimeError(str(exc)) from exc
 
 
+def _remove_efi_dir(r, identity: dict, journal: Journal) -> None:
+    """Remove a loader directory this migration installed on the reused ESP.
+
+    Only the directory named in the journal, only on the ESP whose PARTUUID the
+    journal recorded, and only while that ESP is the one mounted now.  A
+    directory that cannot be proved to be ours stays for manual review.
+    """
+    name = str(identity.get("efi_dir", ""))
+    esp_partuuid = str(identity.get("esp_partuuid", ""))
+    source = discover_source(r)
+    if (not name or "/" in name or name in (".", "..")
+            or esp_partuuid.casefold() != source.esp.partition.partuuid.casefold()):
+        raise RuntimeError("owned destination residues require manual review")
+    path = Path(source.esp.mountpoint) / "EFI" / name
+    if path.is_symlink() or not path.is_dir():
+        raise RuntimeError("installed EFI directory is not a directory")
+    op = journal.intend("rollback_efi_dir", dict(identity), path=str(path))
+    shutil.rmtree(path)
+    fsync_dir(path.parent)
+    if path.exists():
+        raise RuntimeError("installed EFI directory remained after rollback")
+    journal.done(op, "removed")
+
+
 def rollback_destination(r, journal: Journal) -> None:
     """Remove only detached destination partitions proven by the journal guard."""
     if not journal.is_current():
@@ -1014,6 +1040,8 @@ def rollback_destination(r, journal: Journal) -> None:
         if any(_live_partuuid(v) == str(identity["partuuid"]).casefold()
                for v in live.identities):
             raise RuntimeError("destination partition remained after rollback")
+    for item in [r_ for r_ in residues if r_.kind == "efi_dir"]:
+        _remove_efi_dir(r, item.identity, journal)
     remaining = recover(journal.root, live, live.running_root_uuid)
     planned = {str(item["identity"]["partuuid"]).casefold() for item in entries
                if item["type"] == "intent" and item["op"] == "create_partition"}

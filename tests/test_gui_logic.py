@@ -130,3 +130,22 @@ def test_event_text_lists_the_failed_verification_checks():
         {"severity": "warning", "check": "esp", "detail": "extra loader directory"}]}
     assert event_text(event) == ("verify_findings: error initramfs: missing cryptsetup hook; "
                                  "warning esp: extra loader directory")
+
+
+def test_event_text_shows_what_the_reconciliation_did():
+    assert event_text({"phase": "reconcile", "kind": "manual_review",
+                       "detail": "owned destination residues require manual review"}) == (
+        "reconcile: manual_review: owned destination residues require manual review")
+    assert event_text({"phase": "reconcile", "kind": "rolled_back",
+                       "detail": "2909"}) == "reconcile: rolled_back: 2909"
+
+
+def test_back_is_available_again_after_a_stopped_migration():
+    from distromove.gui import back_enabled
+    assert back_enabled("destination", busy=False, result_ok=None) is True
+    assert back_enabled("destination", busy=True, result_ok=None) is False
+    # A stopped run must be retryable without restarting the program.
+    assert back_enabled("result", busy=False, result_ok=False) is True
+    # A finished migration is not undone by walking back through the wizard.
+    assert back_enabled("result", busy=False, result_ok=True) is False
+    assert back_enabled("progress", busy=False, result_ok=None) is False

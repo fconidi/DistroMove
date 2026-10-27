@@ -571,3 +571,48 @@ def test_on_failure_receives_the_exception_that_stopped_the_run(tmp_path):
                            on_failure=seen.append)
     assert result.ok is False and result.phase == "preflight"
     assert [type(exc).__name__ for exc in seen] == ["RuntimeError"]
+
+
+def test_rollback_removes_the_efi_directory_it_installed(tmp_path, monkeypatch):
+    import distromove.engine as engine
+    esp = tmp_path / "esp"
+    installed = esp / "EFI" / "distromove-290986ef"
+    installed.mkdir(parents=True)
+    (installed / "grubx64.efi").write_bytes(b"")
+    (esp / "EFI" / "SysLinuxOS").mkdir()
+    journal = Journal(tmp_path / "journal", "rollback-test", host_root_uuid="old-root")
+    journal.intend("install_efi_dir", {"esp_partuuid": "esp-part",
+                                       "efi_dir": "distromove-290986ef"}, creates="efi_dir")
+    live = SimpleNamespace(running_root_uuid="old-root", identities=[], mounts=[], mappers=[])
+    residues = iter([[SimpleNamespace(kind="efi_dir", identity={
+        "esp_partuuid": "esp-part", "efi_dir": "distromove-290986ef"})], []])
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: live)
+    monkeypatch.setattr(engine, "discover_source", lambda r: SimpleNamespace(
+        volumes=[], esp=SimpleNamespace(mountpoint=str(esp),
+                                        partition=SimpleNamespace(partuuid="esp-part"))))
+    monkeypatch.setattr(engine, "recover", lambda *args: next(residues))
+    rollback_destination(SimpleNamespace(run=lambda argv, **kw: None), journal)
+    assert not installed.exists()
+    assert (esp / "EFI" / "SysLinuxOS").is_dir()
+    assert not journal.is_current()
+
+
+def test_rollback_refuses_an_efi_directory_of_another_esp(tmp_path, monkeypatch):
+    import distromove.engine as engine
+    esp = tmp_path / "esp"
+    (esp / "EFI" / "distromove-290986ef").mkdir(parents=True)
+    journal = Journal(tmp_path / "journal", "rollback-test", host_root_uuid="old-root")
+    journal.intend("install_efi_dir", {"esp_partuuid": "other-part",
+                                       "efi_dir": "distromove-290986ef"}, creates="efi_dir")
+    live = SimpleNamespace(running_root_uuid="old-root", identities=[], mounts=[], mappers=[])
+    monkeypatch.setattr(engine, "collect_snapshot", lambda r: live)
+    monkeypatch.setattr(engine, "discover_source", lambda r: SimpleNamespace(
+        volumes=[], esp=SimpleNamespace(mountpoint=str(esp),
+                                        partition=SimpleNamespace(partuuid="esp-part"))))
+    monkeypatch.setattr(engine, "recover", lambda *args: [SimpleNamespace(
+        kind="efi_dir", identity={"esp_partuuid": "other-part",
+                                  "efi_dir": "distromove-290986ef"})])
+    with pytest.raises(RuntimeError, match="manual review"):
+        rollback_destination(SimpleNamespace(run=lambda argv, **kw: None), journal)
+    assert (esp / "EFI" / "distromove-290986ef").is_dir()
+    assert journal.is_current()

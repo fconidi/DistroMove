@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- Remove the loader directory installed on a reused EFI system partition when a migration is rolled back, so the next attempt is not refused.
+- Report what the reconciliation did or why it needs attention.
+- Return to the wizard from the result of a stopped migration to try again.
+
 ## 0.1.8
 
 - Show which checks the final verification failed, in the progress log and in the root-only log.

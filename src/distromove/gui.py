@@ -124,9 +124,21 @@ def gpt_init_prompt(disk: dict, *, language: str = "en") -> str | None:
     return f"{disk['path']} ({identity}): {tr('gpt_notice', language)}"
 
 
+def back_enabled(name: str, *, busy: bool, result_ok: bool | None) -> bool:
+    """Back returns on the wizard pages, and on a result that stopped, to retry."""
+    if busy:
+        return False
+    if name == "result":
+        return result_ok is False
+    return name in {"destination", "encryption", "summary"}
+
+
 def event_text(event: dict) -> str:
     """One progress line.  A failure names the phase that stopped and its kind."""
     phase = event.get("phase") or event.get("kind") or ""
+    if phase and event.get("kind") and event["kind"] != phase:
+        return f"{phase}: {event['kind']}" + (f": {event['detail']}"
+                                              if event.get("detail") else "")
     if event.get("findings"):
         return f"{phase}: " + "; ".join(
             f"{item.get('severity')} {item.get('check')}: {item.get('detail')}"
@@ -220,6 +232,7 @@ def launch() -> int:
             self.included = []
             self.rows = []
             self.busy = False
+            self.result_ok = None
             self.migration_id = uuid.uuid4().hex
             self.pages = ["source", "destination", "encryption", "summary",
                           "progress", "result", "delete_old"]
@@ -344,7 +357,8 @@ def launch() -> int:
                 self.step_label.set_text(tr("step_of").format(current=position, total=len(flow)) +
                                          " · " + tr(name))
                 self.step_bar.set_fraction(position / len(flow))
-            self.back.set_sensitive(not self.busy and name in {"destination", "encryption", "summary"})
+            self.back.set_sensitive(back_enabled(name, busy=self.busy,
+                                                 result_ok=self.result_ok))
             self.next.set_visible(name in {"source", "destination", "encryption", "summary"})
             self.next.set_sensitive(not self.busy and self.source is not None)
             self.next.set_label(tr("start") if name == "summary" else tr("next"))
@@ -610,8 +624,14 @@ def launch() -> int:
         def go_back(self, *_):
             name = self.stack.get_visible_child_name()
             prior = {"destination": "source", "encryption": "destination",
-                     "summary": "encryption" if self.form()["encrypted"] else "destination"}
+                     "summary": "encryption" if self.form()["encrypted"] else "destination",
+                     "result": "source"}
             if name in prior:
+                if name == "result":
+                    self.result_ok = None
+                    self.migration_id = uuid.uuid4().hex
+                    self.reload()
+                    return
                 self.show_page(prior[name])
 
         def go_next(self, *_):
@@ -689,6 +709,7 @@ def launch() -> int:
                             "include_mounts": self.included}, self.migration_finished, secret)
 
         def migration_finished(self, result):
+            self.result_ok = bool(result.get("ok"))
             self.result_label.set_text(tr("complete") if result.get("ok") else tr("failed"))
             self.show_page("result")
 
