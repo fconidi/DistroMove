@@ -32,6 +32,7 @@ from .safety import can_delete_old, confirmation_text
 
 SECRET_MAX = 1024
 CONTROL_MAX = 16 * 1024 * 1024
+GRUB_EFI_MODULES = Path("/usr/lib/grub/x86_64-efi")
 _OPS = frozenset({"probe", "plan", "migrate", "preview_delete",
                   "delete_old", "recover", "reconcile"})
 
@@ -213,11 +214,13 @@ def _source_tops(source, scratch: Path, r: Runner, journal: Journal) -> dict[str
     return tops
 
 
-def _grub_caps() -> GrubCaps:
-    """Advertise only encrypted boot formats with the installed EFI modules."""
-    modules = Path("/usr/lib/grub/x86_64-efi")
+def _grub_caps(modules: Path = GRUB_EFI_MODULES) -> GrubCaps:
+    """Advertise only encrypted boot formats with the installed EFI modules.
+
+    GRUB implements XTS inside ``cryptodisk`` itself, so no module carries it.
+    """
     common = all((modules / name).is_file() for name in
-                 ("cryptodisk.mod", "pbkdf2.mod", "gcry_rijndael.mod", "xts.mod"))
+                 ("cryptodisk.mod", "pbkdf2.mod", "gcry_rijndael.mod", "afsplitter.mod"))
     versions = {version for version, name in ((1, "luks.mod"), (2, "luks2.mod"))
                 if common and (modules / name).is_file()}
     return GrubCaps(frozenset(versions),
@@ -324,6 +327,15 @@ def _stable_source(value):
     return value
 
 
+def _migration_result(result) -> dict:
+    """The outcome for the GUI.  A failure names its kind, never a secret-bearing message."""
+    out = {"ok": result.ok, "phase": result.phase,
+           "warnings": result.warnings, "bootnum": result.new_bootnum}
+    if not result.ok and result.warnings:
+        out["error"] = result.warnings[0]
+    return out
+
+
 def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
     migration_id = data.get("migration_id")
     if not isinstance(migration_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", migration_id):
@@ -385,8 +397,7 @@ def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
         context = replace(context, btrfs_source_tops=tops)
         result = run_migration(plan, source, Secrets(secret), r, emit, journal, lock,
                                context=context)
-        return {"ok": result.ok, "phase": result.phase,
-                "warnings": result.warnings, "bootnum": result.new_bootnum}
+        return _migration_result(result)
 
 
 def system_operation(data: dict, secret: bytes | None,

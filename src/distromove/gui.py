@@ -124,6 +124,22 @@ def gpt_init_prompt(disk: dict, *, language: str = "en") -> str | None:
     return f"{disk['path']} ({identity}): {tr('gpt_notice', language)}"
 
 
+def event_text(event: dict) -> str:
+    """One progress line.  A failure names the phase that stopped and its kind."""
+    phase = event.get("phase") or event.get("kind") or ""
+    if phase != "error":
+        return phase
+    failed, kind = event.get("failed_phase"), event.get("error")
+    detail = f"{failed} ({kind})" if failed and kind else failed or kind
+    return f"error: {detail}" if detail else "error"
+
+
+def failure_detail(result: dict | None, error: str | None) -> str:
+    """What stopped the run: the local error, else the helper's kind, else its phase."""
+    result = result or {}
+    return error or result.get("error") or result.get("phase") or "unknown"
+
+
 def _read_exact(stream, length: int) -> bytes:
     data = bytearray()
     while len(data) < length:
@@ -356,7 +372,7 @@ def launch() -> int:
             if hasattr(self, "esp_mode"):
                 self.esp_disk.set_sensitive(self.esp_mode.get_active_id() == "new")
             if error or not result or not result.get("ok"):
-                self.status.set_text(f"{tr('failed')} ({error or (result or {}).get('error', 'unknown')})")
+                self.status.set_text(f"{tr('failed')} ({failure_detail(result, error)})")
                 self.next.set_sensitive(self.source is not None)
                 self.back.set_sensitive(True)
                 if callback == self.migration_finished:
@@ -378,11 +394,11 @@ def launch() -> int:
             return items
 
         def show_event(self, event):
-            phase = event.get("phase") or event.get("kind") or ""
+            text = event_text(event)
             if self.stack.get_visible_child_name() == "progress":
-                self.progress_label.set_text(phase)
+                self.progress_label.set_text(text)
                 self.progress_bar.pulse()
-                self.log_buffer.insert_at_cursor(phase + "\n")
+                self.log_buffer.insert_at_cursor(text + "\n")
                 if event.get("freeze_seconds") is not None:
                     self.freeze_label.set_text(f"{event['freeze_seconds']:.1f} s")
             return False

@@ -269,3 +269,43 @@ def test_planned_source_ignores_usage_counters_but_not_identity():
     other = {"volumes": [{"volume_id": "root", "fs_uuid": "u2", "used_bytes": 10,
                           "apparent_bytes": 9, "used_inodes": 5}], "secure_boot": False}
     assert _stable_source(planned) != _stable_source(other)
+
+
+def _grub_modules(tmp_path, names):
+    for name in names:
+        (tmp_path / name).write_bytes(b'')
+    return tmp_path
+
+
+DEBIAN_13_GRUB = ('afsplitter.mod', 'crypto.mod', 'cryptodisk.mod', 'gcry_rijndael.mod',
+                  'gcry_sha256.mod', 'gcry_sha512.mod', 'luks.mod', 'luks2.mod',
+                  'pbkdf2.mod')
+
+
+def test_grub_caps_accept_debian_13_modules_without_an_xts_module(tmp_path):
+    # GRUB 2.12 implements XTS inside cryptodisk; there is no xts.mod to find.
+    caps = helper._grub_caps(_grub_modules(tmp_path, DEBIAN_13_GRUB))
+    assert caps.luks_versions == frozenset({1, 2})
+    assert caps.kdfs == frozenset({'pbkdf2'})
+    assert caps.ciphers == frozenset({'aes-xts-plain64'})
+
+
+def test_grub_caps_empty_without_the_cryptodisk_module(tmp_path):
+    names = [n for n in DEBIAN_13_GRUB if n != 'cryptodisk.mod']
+    caps = helper._grub_caps(_grub_modules(tmp_path, names))
+    assert not caps.luks_versions and not caps.kdfs and not caps.ciphers
+
+
+def test_grub_caps_offer_only_the_installed_luks_version(tmp_path):
+    names = [n for n in DEBIAN_13_GRUB if n != 'luks2.mod']
+    assert helper._grub_caps(_grub_modules(tmp_path, names)).luks_versions == frozenset({1})
+
+
+def test_migration_result_carries_the_error_kind_when_it_stops():
+    from distromove.engine import MigrationResult
+    stopped = MigrationResult(False, None, None, None, ['UnsupportedKdf'], 'preflight')
+    assert helper._migration_result(stopped) == {
+        'ok': False, 'phase': 'preflight', 'warnings': ['UnsupportedKdf'],
+        'bootnum': None, 'error': 'UnsupportedKdf'}
+    done = MigrationResult(True, None, '0002', None, [], 'activated')
+    assert 'error' not in helper._migration_result(done)

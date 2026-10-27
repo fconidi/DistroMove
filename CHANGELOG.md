@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Recognise GRUB's ability to open an encrypted boot volume on systems where XTS support is built into GRUB itself, instead of refusing the migration.
+- Name the phase that stopped and the kind of failure in the progress log and in the result message.
+
 ## 0.1.3
 
 - Show the disk containing the reused EFI system partition in the destination form.

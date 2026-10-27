@@ -1,6 +1,6 @@
 from distromove.gui import (database_warnings, deletion_details, describe_plan,
-                            gpt_init_prompt, pause_commands, reused_esp_disk,
-                            validate_form)
+                            event_text, failure_detail, gpt_init_prompt, pause_commands,
+                            reused_esp_disk, validate_form)
 
 
 def test_reused_esp_disk_is_existing_esp_parent_not_first_inventory_disk():
@@ -101,3 +101,18 @@ def test_gpt_init_prompt_only_when_wipefs_clean():
     assert "SERIAL" in gpt_init_prompt(clean)
     assert gpt_init_prompt({**clean, "signatures": ["ext4"]}) is None
     assert gpt_init_prompt({**clean, "signatures": None}) is None
+
+
+def test_event_text_names_the_phase_that_stopped_and_the_error_kind():
+    assert event_text({"phase": "copy"}) == "copy"
+    assert event_text({"phase": "error", "failed_phase": "preflight",
+                       "error": "UnsupportedKdf"}) == "error: preflight (UnsupportedKdf)"
+    assert event_text({"phase": "error"}) == "error"
+
+
+def test_failure_detail_prefers_the_error_over_the_phase():
+    assert failure_detail({"ok": False, "phase": "preflight",
+                           "error": "UnsupportedKdf"}, None) == "UnsupportedKdf"
+    assert failure_detail({"ok": False, "phase": "copy"}, None) == "copy"
+    assert failure_detail(None, "RuntimeError") == "RuntimeError"
+    assert failure_detail(None, None) == "unknown"
