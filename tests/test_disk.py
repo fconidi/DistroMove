@@ -155,11 +155,14 @@ def test_sfdisk_sector_units_and_planned_partuuid(tmp_path):
     writes = [(argv, data) for argv, data, _ in r.calls if argv[:2] == ["sfdisk", "--append"]]
     assert len(writes) == 1
     argv, data = writes[0]
-    assert argv == ["sfdisk", "--append", "--lock", DISK]
+    assert argv == ["sfdisk", "--append", "--lock", "--no-reread", DISK]
     assert b"unit: sectors\n" in data
     assert b"start=8192,size=8192" in data
     assert b"uuid=new-part" in data
-    assert b"--force" not in data and "--no-reread" not in argv
+    # The reused ESP of the running system can sit on the destination disk, and
+    # sfdisk refuses to even write while a partition of that disk is mounted.
+    # The kernel view is proved afterwards instead; no check is overruled.
+    assert b"--force" not in data and "--force" not in argv
     assert result["root"].path == "/dev/vdb2"
     assert result["root"].luks_uuid == "new-luks"
 

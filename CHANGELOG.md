@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Create the destination partitions when the reused EFI system partition is mounted on the same disk; the table and the kernel view are still verified afterwards.
+
 ## 0.1.6
 
 - Keep the failed command, its exit code and its output in a root-only log, so a stopped migration can be explained.

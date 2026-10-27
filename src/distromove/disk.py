@@ -244,7 +244,11 @@ def create_partitions(r: Runner, plan: MigrationPlan,
             intents.append(journal.intend("create_partition", identity,
                                           creates="partition", disk=disk,
                                           volume_id=part.volume_id))
-        r.run(["sfdisk", "--append", "--lock", disk], input=_script(parts))
+        # --no-reread: the reused ESP of the running system can live on this
+        # disk, and sfdisk refuses to write while any of its partitions is
+        # mounted.  The table and the kernel view are both verified below;
+        # no other check is overruled, and --force is never used.
+        r.run(["sfdisk", "--append", "--lock", "--no-reread", disk], input=_script(parts))
         r.run(["partprobe", disk])
         r.run(["udevadm", "settle"])
         after_sector, after = _table(r, disk)
