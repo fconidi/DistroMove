@@ -117,6 +117,15 @@ def deletion_details(state: dict, *, delete_old_esp: bool = False,
     return lines
 
 
+def confirmation_matches(typed: str, shown: str) -> bool:
+    """Every line of the deletion text, exactly, ignoring only surrounding blank space.
+
+    Invisible leading or trailing whitespace must not read as a different list of
+    partitions, and nothing inside a line is allowed to differ.
+    """
+    return typed.strip() == shown.strip() and bool(shown.strip())
+
+
 def gpt_init_prompt(disk: dict, *, language: str = "en") -> str | None:
     """A missing table is offered only after a successful, signature-free scan."""
     if disk.get("signatures") != [] or not (disk.get("serial") or disk.get("wwn") or disk.get("by_id")):
@@ -783,10 +792,11 @@ def launch() -> int:
         def delete_confirmed(self, *_):
             buffer = self.delete_entry.get_buffer()
             typed = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
-            if typed != self.confirmation_text.get_text():
-                self.status.set_text(tr("validation_error"))
+            shown = self.confirmation_text.get_text()
+            if not confirmation_matches(typed, shown):
+                self.status.set_text(tr("confirmation_mismatch"))
                 return
-            self.run_async({"op": "delete_old", "confirmation": typed,
+            self.run_async({"op": "delete_old", "confirmation": shown.strip(),
                             "delete_old_esp": self.old_esp.get_active(),
                             "erase_luks_header": self.erase_luks.get_active()},
                            self.deleted)

@@ -1,4 +1,4 @@
-from distromove.gui import (database_warnings, deletion_details, describe_plan,
+from distromove.gui import (confirmation_matches, database_warnings, deletion_details, describe_plan,
                             duration_text, event_text, failure_detail, gpt_init_prompt, pause_commands,
                             reused_esp_disk, validate_form)
 
@@ -92,6 +92,24 @@ def test_delete_page_lists_all_old_partitions():
     lines = "\n".join(deletion_details(state, delete_old_esp=True))
     assert "part-1" in lines and "part-2" in lines and "esp-1" in lines
     assert "already removed" in lines
+
+
+def test_confirmation_matches_despite_a_trailing_newline_or_spaces():
+    shown = ("Delete old system for migration abc:\n"
+             "root 1111-2222 disk=0xaa start=2048 size=4096")
+    assert confirmation_matches(shown + "\n", shown)
+    assert confirmation_matches("  " + shown + " \n\n", shown)
+    assert confirmation_matches(shown, shown)
+
+
+def test_confirmation_refuses_a_changed_or_missing_line():
+    shown = ("Delete old system for migration abc:\n"
+             "root 1111-2222 disk=0xaa start=2048 size=4096\n"
+             "esp 3333-4444 disk=0xaa start=2048 size=1024")
+    assert not confirmation_matches(shown.rsplit("\n", 1)[0], shown)
+    assert not confirmation_matches(shown.replace("2048", "2049"), shown)
+    assert not confirmation_matches(shown.replace("root 1111", "root  1111"), shown)
+    assert not confirmation_matches("", shown)
 
 
 def test_gpt_init_prompt_only_when_wipefs_clean():

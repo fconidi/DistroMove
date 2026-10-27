@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.15
+
+- Accept the typed deletion confirmation when only blank space around it differs, and say so when the text itself does not match.
+
 ## 0.1.14
 
 - Show the activity log on the result page, scrolled to the last line.
