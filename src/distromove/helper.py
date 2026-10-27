@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import BinaryIO, Callable
 import uuid
 
-from .cleanup import delete_old_system
+from .cleanup import delete_old_system, deletion_recovery_tokens
 from .engine import (MigrationContext, Secrets, reconcile_on_start,
                      rollback_destination, run_migration)
 from .disk import GrubCaps
@@ -176,6 +176,20 @@ def _reconcile(r: Runner) -> list[dict]:
         return []
     return [asdict(action) for action in reconcile_on_start(r, journal,
                                                              state_root=Path("/"))]
+
+
+def _recoverable_deletion(state, live, *, delete_old_esp: bool):
+    """The saved state plus the pending deletions whose identity is already absent."""
+    journal = _current(live.running_root_uuid)
+    if journal is None or journal.migration_id != f"{state.migration_id}-delete":
+        return state
+    try:
+        tokens = [token for _, token in deletion_recovery_tokens(
+            state, journal, live, delete_old_esp=delete_old_esp, resolve=os.path.realpath)]
+    except ValueError:
+        # The reasons of the refusal belong to the guard below, not to this preview.
+        return state
+    return replace(state, deletion_done=[*state.deletion_done, *tokens]) if tokens else state
 
 
 def _plan(raw: dict, source, r: Runner) -> MigrationPlan:
@@ -496,6 +510,10 @@ def system_operation(data: dict, secret: bytes | None,
             if state is None:
                 raise ValueError("no state for running root")
             old_esp = data.get("delete_old_esp", False)
+            # A deletion stopped between a removal and its record is judged on the
+            # state the retry will act on, so the offer is not withheld for a step
+            # that already happened.
+            state = _recoverable_deletion(state, live, delete_old_esp=old_esp)
             decision = can_delete_old(state, live, delete_old_esp=old_esp)
             return {"ok": True, "allowed": decision.ok, "reasons": decision.reasons,
                     "state": asdict(state),

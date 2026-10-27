@@ -5,9 +5,9 @@ import subprocess
 
 import pytest
 
-from distromove.cleanup import _locate, delete_old_system
+from distromove.cleanup import _locate, delete_old_system, deletion_recovery_tokens
 from distromove.journal import Journal
-from distromove.safety import confirmation_text
+from distromove.safety import can_delete_old, confirmation_text
 from distromove.state import load_state, save_state
 from test_safety import OLD_ESP, OLD_PART, live, state
 
@@ -203,6 +203,29 @@ def test_partition_lookup_converts_512_unit_start_on_4k_disk():
                 "/dev/disk/by-id/disk": "/dev/vdb"}.get(path, path)
     assert _locate(FourK(), state().old_volumes[0], resolve) == (
         "/dev/disk/by-id/disk", 1, f"/dev/disk/by-partuuid/{OLD_PART}")
+
+
+def test_a_partition_removed_without_its_mark_is_recoverable_and_allowed(tmp_path):
+    """The deletion stopped between the removal and its record; the retry must be offered."""
+    root, s, _, journal, system = setup(tmp_path)
+    s = replace(s, phase="DELETING", deletion_done=["grub_entry", "uefi_entry",
+                                                    f"luks:{OLD_PART}"])
+    save_state(s, root)
+    journal.intend("delete_old_partition",
+                   {"partuuid": OLD_PART, "disk_wwn": s.old_volumes[0].disk_wwn,
+                    "start_sectors": s.old_volumes[0].start_sectors})
+    snapshot = replace(system.snapshot,
+                       identities=[i for i in system.snapshot.identities
+                                   if i.partuuid != OLD_PART],
+                       boot_entries={k: v for k, v in system.snapshot.boot_entries.items()
+                                     if k != "0001"})
+    # Without the pending intent the guard can only say the partition disappeared.
+    assert not can_delete_old(s, snapshot).ok
+    tokens = deletion_recovery_tokens(s, journal, snapshot, delete_old_esp=False,
+                                      resolve=lambda path: path)
+    assert [token for _, token in tokens] == [f"partition:{OLD_PART}"]
+    recovered = replace(s, deletion_done=[*s.deletion_done, f"partition:{OLD_PART}"])
+    assert can_delete_old(recovered, snapshot).ok
 
 
 def test_present_refuses_an_unreadable_identity_at_the_sector_it_asks_about():

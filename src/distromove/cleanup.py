@@ -62,13 +62,18 @@ def _present(live: SystemSnapshot, expected: VolumeIdentity) -> bool:
     return False
 
 
-def _reconcile(state: MigrationState, root: Path, journal: Journal,
-               live: SystemSnapshot, *, delete_old_esp: bool,
-               resolve: Callable[[str], str]) -> MigrationState:
-    """Close an intent only when its exact former identity is now absent."""
+def deletion_recovery_tokens(state: MigrationState, journal: Journal, live: SystemSnapshot,
+                             *, delete_old_esp: bool,
+                             resolve: Callable[[str], str]) -> list[tuple[str, str]]:
+    """(journal op, deletion token) for each pending step whose former identity is absent.
+
+    Nothing is written. A deletion stopped between a removal and its record is
+    recognised here, so the guard can judge the state the retry will act on.
+    """
     if (live.running_root_uuid.casefold() != state.new_root_uuid.casefold()
             or (state.uefi_entry and (live.boot_current or "").upper() != state.uefi_entry.upper())):
         raise ValueError("deletion guard refused: running system changed")
+    found: list[tuple[str, str]] = []
     for intent in _pending(journal):
         identity = intent["identity"]
         if intent["op"] == "delete_old_uefi":
@@ -95,15 +100,27 @@ def _reconcile(state: MigrationState, root: Path, journal: Journal,
                               for v in live.identities):
                 raise ValueError("deleted partition was replaced at the same sector")
         if absent:
-            candidate = (state if token in state.deletion_done else
-                         replace(state, deletion_done=[*state.deletion_done, token]))
+            done = [*state.deletion_done, *(item for _, item in found)]
+            candidate = (state if token in done else
+                         replace(state, deletion_done=[*done, token]))
             decision = can_delete_old(candidate, live, delete_old_esp=delete_old_esp,
                                       resolve=resolve)
             if not decision.ok:
                 raise ValueError("deletion guard refused during reconciliation: " +
                                  "; ".join(decision.reasons))
-            state = _mark(state, root, token)
-            journal.done(intent["op_id"], "reconciled")
+            found.append((intent["op_id"], token))
+    return found
+
+
+def _reconcile(state: MigrationState, root: Path, journal: Journal,
+               live: SystemSnapshot, *, delete_old_esp: bool,
+               resolve: Callable[[str], str]) -> MigrationState:
+    """Record the pending steps whose former identity is already absent."""
+    for op_id, token in deletion_recovery_tokens(state, journal, live,
+                                                 delete_old_esp=delete_old_esp,
+                                                 resolve=resolve):
+        state = _mark(state, root, token)
+        journal.done(op_id, "reconciled")
     return state
 
 

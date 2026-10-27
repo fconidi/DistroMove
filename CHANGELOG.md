@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.17
+
+- Offer the deletion again after it stopped between removing a partition and recording it, instead of reporting the partition as disappeared.
+
 ## 0.1.16
 
 - Wait for the kernel to drop a deleted partition before checking that it is gone, and judge that check only by the identity of the partition in question.
