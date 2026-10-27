@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8
+
+- Show which checks the final verification failed, in the progress log and in the root-only log.
+
 ## 0.1.7
 
 - Create the destination partitions when the reused EFI system partition is mounted on the same disk; the table and the kernel view are still verified afterwards.

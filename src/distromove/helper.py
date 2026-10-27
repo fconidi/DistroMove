@@ -84,7 +84,8 @@ def _request(stream: BinaryIO) -> tuple[dict, bytes | None]:
     return data, secret
 
 
-def record_failure(exc: BaseException, *, op: str, root: Path = DEFAULT_ROOT) -> None:
+def record_failure(exc: BaseException, *, op: str, extra: list[str] | None = None,
+                   root: Path = DEFAULT_ROOT) -> None:
     """Keep the last failure where only root can read it.
 
     The control channel carries exception types alone, which is not enough to
@@ -101,6 +102,7 @@ def record_failure(exc: BaseException, *, op: str, root: Path = DEFAULT_ROOT) ->
         for name, text in (("stdout", exc.stdout), ("stderr", exc.stderr)):
             if text:
                 lines.append(f"{name}:\n" + "\n".join(text.splitlines()[-20:]))
+    lines += list(extra or ())
     try:
         fd = os.open(root / "last-error.log",
                      os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
@@ -110,6 +112,22 @@ def record_failure(exc: BaseException, *, op: str, root: Path = DEFAULT_ROOT) ->
             os.close(fd)
     except OSError:
         pass
+
+
+class _failure_sink:
+    """Remember the findings a failed check reported, for the root-only log."""
+
+    def __init__(self, op: str = "migrate"):
+        self.op = op
+        self.findings: list[str] = []
+
+    def note(self, event: dict) -> None:
+        if event.get("findings"):
+            self.findings = [f"{item.get('severity')} {item.get('check')}: "
+                             f"{item.get('detail')}" for item in event["findings"]]
+
+    def record(self, exc: BaseException) -> None:
+        record_failure(exc, op=self.op, extra=self.findings)
 
 
 def serve(stdin: BinaryIO, stdout: BinaryIO,
@@ -427,9 +445,14 @@ def _migration(data: dict, secret: bytes | None, emit, r: Runner) -> dict:
             rollback_destination(r, journal)
             raise
         context = replace(context, btrfs_source_tops=tops)
-        result = run_migration(plan, source, Secrets(secret), r, emit, journal, lock,
-                               context=context,
-                               on_failure=lambda exc: record_failure(exc, op="migrate"))
+        sink = _failure_sink()
+
+        def report(event: dict) -> None:
+            sink.note(event)
+            emit(event)
+
+        result = run_migration(plan, source, Secrets(secret), r, report, journal, lock,
+                               context=context, on_failure=sink.record)
         return _migration_result(result)
 
 

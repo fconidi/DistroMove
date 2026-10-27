@@ -338,3 +338,23 @@ def test_record_failure_of_a_plain_error_names_only_its_kind(tmp_path):
 
 def test_record_failure_never_raises_when_the_directory_is_missing(tmp_path):
     helper.record_failure(ValueError('x'), op='probe', root=tmp_path / 'absent')
+
+
+def test_record_failure_keeps_the_verification_findings(tmp_path):
+    helper.record_failure(RuntimeError('final verification failed'), op='migrate',
+                          root=tmp_path,
+                          extra=['error initramfs: missing cryptsetup hook'])
+    text = (tmp_path / 'last-error.log').read_text()
+    assert 'error initramfs: missing cryptsetup hook' in text
+
+
+def test_migration_records_the_findings_of_a_failed_verification(monkeypatch, tmp_path):
+    saved = {}
+    monkeypatch.setattr(helper, 'record_failure',
+                        lambda exc, *, op, extra=None, root=None: saved.update(extra=extra))
+    sink = helper._failure_sink()
+    sink.note({'phase': 'verify_findings', 'findings': [
+        {'severity': 'error', 'check': 'initramfs', 'detail': 'missing hook'}]})
+    sink.note({'phase': 'error', 'failed_phase': 'verify'})
+    sink.record(RuntimeError('final verification failed'))
+    assert saved['extra'] == ['error initramfs: missing hook']

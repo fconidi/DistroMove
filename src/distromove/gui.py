@@ -127,6 +127,10 @@ def gpt_init_prompt(disk: dict, *, language: str = "en") -> str | None:
 def event_text(event: dict) -> str:
     """One progress line.  A failure names the phase that stopped and its kind."""
     phase = event.get("phase") or event.get("kind") or ""
+    if event.get("findings"):
+        return f"{phase}: " + "; ".join(
+            f"{item.get('severity')} {item.get('check')}: {item.get('detail')}"
+            for item in event["findings"])
     if phase != "error":
         return phase
     failed, kind = event.get("failed_phase"), event.get("error")

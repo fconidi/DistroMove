@@ -122,3 +122,11 @@ def test_event_text_names_the_failed_command_and_its_exit_code():
     assert event_text({"phase": "error", "failed_phase": "create_storage",
                        "error": "RunnerError", "command": "sfdisk",
                        "exit_code": 1}) == "error: create_storage (RunnerError: sfdisk exit 1)"
+
+
+def test_event_text_lists_the_failed_verification_checks():
+    event = {"phase": "verify_findings", "findings": [
+        {"severity": "error", "check": "initramfs", "detail": "missing cryptsetup hook"},
+        {"severity": "warning", "check": "esp", "detail": "extra loader directory"}]}
+    assert event_text(event) == ("verify_findings: error initramfs: missing cryptsetup hook; "
+                                 "warning esp: extra loader directory")
