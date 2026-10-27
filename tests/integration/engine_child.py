@@ -110,7 +110,7 @@ class LoopBackend:
                           self.staging, journal)
         self.device = device
 
-    def copy(self, source, r, journal):
+    def copy(self, source, r, journal, progress=None):
         self._enter("copy")
         if self.s.get("sleep_before_copy"):
             time.sleep(self.s["sleep_before_copy"])
@@ -128,7 +128,7 @@ class LoopBackend:
     def install_boot(self, source, r, journal):
         self._enter("install_boot")
 
-    def verify(self, source, secrets, r):
+    def verify(self, source, secrets, r, progress=None):
         self._enter("verify")
         return VerifyReport(verify_copy(self.freeze.manifest, self.staging, set()))
 

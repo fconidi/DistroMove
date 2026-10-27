@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 
 from .i18n import LANGUAGE, tr
@@ -136,6 +137,13 @@ def back_enabled(name: str, *, busy: bool, result_ok: bool | None) -> bool:
 def event_text(event: dict) -> str:
     """One progress line.  A failure names the phase that stopped and its kind."""
     phase = event.get("phase") or event.get("kind") or ""
+    if phase in {"copy_detail", "verify_detail"}:
+        action = "copy" if phase == "copy_detail" else "verify"
+        step = event.get("step", "")
+        number = event.get("number")
+        total = event.get("total")
+        count = f" ({number}/{total})" if number is not None and total else ""
+        return f"{action}: {step}{count}"
     if phase and event.get("kind") and event["kind"] != phase:
         return f"{phase}: {event['kind']}" + (f": {event['detail']}"
                                               if event.get("detail") else "")
@@ -150,6 +158,10 @@ def event_text(event: dict) -> str:
         kind = f"{kind}: {event['command']} exit {event.get('exit_code')}"
     detail = f"{failed} ({kind})" if failed and kind else failed or kind
     return f"error: {detail}" if detail else "error"
+
+
+def duration_text(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def failure_detail(result: dict | None, error: str | None) -> str:
@@ -233,6 +245,10 @@ def launch() -> int:
             self.rows = []
             self.busy = False
             self.result_ok = None
+            self.progress_active = False
+            self.progress_step = ""
+            self.progress_started = 0.0
+            self.last_progress_event = 0.0
             self.migration_id = uuid.uuid4().hex
             self.pages = ["source", "destination", "encryption", "summary",
                           "progress", "result", "delete_old"]
@@ -318,6 +334,7 @@ def launch() -> int:
             self._build_encryption()
             self._build_summary()
             self._build_progress()
+            GLib.timeout_add(200, self.tick_progress)
             self._build_result()
             self._build_delete()
             self.show_page("source")
@@ -416,12 +433,27 @@ def launch() -> int:
         def show_event(self, event):
             text = event_text(event)
             if self.stack.get_visible_child_name() == "progress":
+                now = time.monotonic()
+                if text != self.progress_step:
+                    self.progress_step = text
+                    self.progress_started = now
+                self.last_progress_event = now
                 self.progress_label.set_text(text)
-                self.progress_bar.pulse()
-                self.log_buffer.insert_at_cursor(text + "\n")
+                self.log_buffer.insert(self.log_buffer.get_end_iter(), text + "\n")
+                self.log_view.scroll_to_iter(self.log_buffer.get_end_iter(), 0, False, 0, 0)
                 if event.get("freeze_seconds") is not None:
                     self.freeze_label.set_text(f"{event['freeze_seconds']:.1f} s")
             return False
+
+        def tick_progress(self):
+            if self.progress_active and self.stack.get_visible_child_name() == "progress":
+                self.progress_bar.pulse()
+                now = time.monotonic()
+                elapsed = int(now - self.progress_started)
+                since = int(now - self.last_progress_event)
+                self.activity_label.set_text(tr("progress_times").format(
+                    elapsed=duration_text(elapsed), since=duration_text(since)))
+            return True
 
         def reload(self):
             self.run_async({"op": "probe"}, self.loaded)
@@ -559,11 +591,14 @@ def launch() -> int:
             box.pack_start(self.progress_label, False, False, 0)
             self.progress_bar = Gtk.ProgressBar()
             box.pack_start(self.progress_bar, False, False, 0)
+            self.activity_label = self.label("")
+            box.pack_start(self.activity_label, False, False, 0)
             self.freeze_label = self.label("")
             box.pack_start(self.freeze_label, False, False, 0)
             view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
                                 wrap_mode=Gtk.WrapMode.WORD_CHAR)
             self.log_buffer = view.get_buffer()
+            self.log_view = view
             scroll = Gtk.ScrolledWindow()
             scroll.set_min_content_height(240)
             scroll.add(view)
@@ -703,12 +738,16 @@ def launch() -> int:
             current = self.form()
             secret = current["passphrase"].encode("utf-8") if current["encrypted"] else None
             self.log_buffer.set_text("")
+            self.progress_step = ""
+            self.progress_started = self.last_progress_event = time.monotonic()
+            self.progress_active = True
             self.show_page("progress")
             self.run_async({"op": "migrate", "migration_id": self.migration_id,
                             "source": self.source, "plan": self.plan,
                             "include_mounts": self.included}, self.migration_finished, secret)
 
         def migration_finished(self, result):
+            self.progress_active = False
             self.result_ok = bool(result.get("ok"))
             self.result_label.set_text(tr("complete") if result.get("ok") else tr("failed"))
             self.show_page("result")

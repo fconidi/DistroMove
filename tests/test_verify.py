@@ -5,6 +5,8 @@ import shutil
 import subprocess
 
 from distromove.manifest import build_manifest
+from distromove.config_rewrite import rewrite_fstab
+from distromove.model import UuidMap
 from distromove.verify import (Finding, VerifyReport, check_esp, check_identities,
                               check_initramfs, check_unlock, verify_copy,
                               verify_transformations)
@@ -93,6 +95,48 @@ def test_expected_added_file_allows_parent_mtime_change(tmp_path):
     reference = build_manifest(src, sample=0)
     (dst / "etc/new.conf").write_text("new")
     assert verify_copy(reference, dst, {"etc/new.conf"}) == []
+
+
+def test_known_runtime_directory_mtime_does_not_hide_mode_change(tmp_path):
+    src, dst = tree(tmp_path)
+    (src / "tmp").mkdir(mode=0o1777)
+    (dst / "tmp").mkdir(mode=0o1777)
+    reference = build_manifest(src, sample=0)
+    before = (dst / "tmp").stat()
+    os.utime(dst / "tmp", ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    assert errors(verify_copy(reference, dst, set()))
+    assert verify_copy(reference, dst, set(), expected_mtime_paths=("tmp",)) == []
+    (dst / "tmp").chmod(0o755)
+    assert errors(verify_copy(reference, dst, set(), expected_mtime_paths=("tmp",)))
+
+
+def test_encrypted_root_fstab_accepts_only_its_planned_mapper(tmp_path):
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc/fstab").write_text("/dev/mapper/distromove-new-root / btrfs defaults 0 0\n")
+    expected = {"UUID=new-root", "/dev/mapper/distromove-new-root"}
+    assert not any("fstab root" in f.detail for f in errors(
+        verify_transformations(root, {"new-root"}, set(), {}, root_sources=expected)))
+    (root / "etc/fstab").write_text("/dev/mapper/other / btrfs defaults 0 0\n")
+    assert any("fstab root" in f.detail for f in errors(
+        verify_transformations(root, {"new-root"}, set(), {}, root_sources=expected)))
+    (root / "etc/fstab").write_text("/dev/mapper/DISTROMOVE-new-root / btrfs defaults 0 0\n")
+    assert any("fstab root" in f.detail for f in errors(
+        verify_transformations(root, {"new-root"}, set(), {}, root_sources=expected)))
+
+
+def test_rewritten_encrypted_root_fstab_passes_root_identity_check(tmp_path):
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    source = "/dev/mapper/luks-old / btrfs subvol=/@,defaults 0 0\n"
+    mapping = UuidMap(fs={"old-fs": "new-fs"}, luks={}, partuuid={},
+                      mapper={"luks-old": "distromove-new-root"},
+                      subvolid={}, swap_uuid={})
+    rewritten = rewrite_fstab(source, mapping, filesystem_by_mount={"/": "old-fs"})
+    (root / "etc/fstab").write_text(rewritten)
+    assert not any("fstab root" in f.detail for f in errors(
+        verify_transformations(root, {"new-fs"}, set(), {},
+                               root_sources={"UUID=new-fs", "/dev/mapper/distromove-new-root"})))
 
 
 def test_unexpected_extra_file_and_bad_expected_path(tmp_path):

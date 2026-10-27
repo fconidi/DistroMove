@@ -1,5 +1,5 @@
 from distromove.gui import (database_warnings, deletion_details, describe_plan,
-                            event_text, failure_detail, gpt_init_prompt, pause_commands,
+                            duration_text, event_text, failure_detail, gpt_init_prompt, pause_commands,
                             reused_esp_disk, validate_form)
 
 
@@ -108,6 +108,9 @@ def test_event_text_names_the_phase_that_stopped_and_the_error_kind():
     assert event_text({"phase": "error", "failed_phase": "preflight",
                        "error": "UnsupportedKdf"}) == "error: preflight (UnsupportedKdf)"
     assert event_text({"phase": "error"}) == "error"
+    assert event_text({"phase": "verify_detail", "step": "copy integrity",
+                       "number": 2, "total": 3}) == "verify: copy integrity (2/3)"
+    assert duration_text(185) == "3:05"
 
 
 def test_failure_detail_prefers_the_error_over_the_phase():

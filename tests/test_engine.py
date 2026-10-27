@@ -92,6 +92,24 @@ def test_order_and_durable_activation(tmp_path):
     assert not journal.is_current()
 
 
+def test_copy_and_verify_details_reach_gui_event_stream(tmp_path):
+    class ReportingBackend(Backend):
+        def copy(self, source, runner, journal, progress):
+            super().copy(source, runner, journal)
+            progress("Btrfs subvolume", 2, 4)
+
+        def verify(self, source, secrets, runner, progress):
+            progress("copy integrity", 1, 3)
+            return super().verify(source, secrets, runner)
+
+    result, events, _ = execute(tmp_path, ReportingBackend(tmp_path / "new"))
+    assert result.ok
+    assert {"phase": "copy_detail", "step": "Btrfs subvolume",
+            "number": 2, "total": 4} in events
+    assert {"phase": "verify_detail", "step": "copy integrity",
+            "number": 1, "total": 3} in events
+
+
 def test_vanished_hot_pass_emits_event_after_copy_completes(tmp_path):
     class VanishedBackend(Backend):
         def copy(self, *args):

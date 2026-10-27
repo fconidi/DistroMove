@@ -312,7 +312,8 @@ def _snapshot_filters(ref: SnapshotRef, migration_id: str) -> list[str]:
 def copy_from_snapshots(r: Runner, snaps: list[SnapshotRef],
                         dst_mounts: dict[tuple[str, str], BtrfsDestination],
                         on_progress: Callable[[PassStats], None] | None = None,
-                        *, journal: Journal, watch: SpaceWatch | None = None) -> None:
+                        *, journal: Journal, watch: SpaceWatch | None = None,
+                        on_stage: Callable[[int, int], None] | None = None) -> None:
     """Copy stable trees; keep snapshots until verification or caller's finally."""
     if not journal.is_current():
         raise ValueError("migration journal is not current")
@@ -332,7 +333,9 @@ def copy_from_snapshots(r: Runner, snaps: list[SnapshotRef],
             if source == dest or source in dest.parents or dest in source.parents:
                 raise ValueError("source and destination overlap")
             prepared.append((ref, source, dest))
-        for ref, source, dest in prepared:
+        for index, (ref, source, dest) in enumerate(prepared, start=1):
+            if on_stage is not None:
+                on_stage(index, len(prepared))
             if watch is not None:
                 watch.check()
             current_fs, _ = _mount_uuid(r, source, exact=False)

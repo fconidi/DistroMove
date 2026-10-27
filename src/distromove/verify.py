@@ -44,10 +44,12 @@ def _relative(value: str) -> str:
 def verify_copy(reference: Manifest, dst: Path,
                 expected_diffs: set[str], *, exclude_paths: tuple[str, ...] = (),
                 exclude_names: tuple[str, ...] = (),
-                expected_trees: tuple[str, ...] = ()) -> list[Finding]:
+                expected_trees: tuple[str, ...] = (),
+                expected_mtime_paths: tuple[str, ...] = ()) -> list[Finding]:
     """Compare the destination only with a stable, already captured reference."""
     ignored = {_relative(value) for value in expected_diffs}
     trees = tuple(_relative(value) for value in expected_trees)
+    expected_mtimes = {_relative(value) for value in expected_mtime_paths}
     ignored.update(trees)
     excluded = tuple(_relative(value) for value in exclude_paths)
     if any("/" in name or name in {"", ".", ".."} for name in exclude_names):
@@ -74,6 +76,8 @@ def verify_copy(reference: Manifest, dst: Path,
             continue
         fields = ("mode", "uid", "gid", "size", "mtime", "sha256")
         for field in fields:
+            if field == "mtime" and path in expected_mtimes:
+                continue
             if field == "mtime" and stat.S_ISDIR(old.mode) and any(
                     changed.startswith(path + "/") for changed in ignored):
                 continue
@@ -94,7 +98,8 @@ def _read(root: Path, relative: str) -> str | None:
 
 
 def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
-                           allowed_roles: Mapping[str, set[str]]) -> list[Finding]:
+                           allowed_roles: Mapping[str, set[str]], *,
+                           root_sources: set[str] | None = None) -> list[Finding]:
     """Check new boot configuration; old IDs are allowed only in the old entry."""
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -139,9 +144,13 @@ def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
         roots = [line.split()[0] for line in fstab.splitlines()
                  if not line.lstrip().startswith("#") and len(line.split()) >= 2
                  and line.split()[1] == "/"]
-        if (len(roots) != 1 or not roots[0].startswith("UUID=")
-                or roots[0][5:].casefold() not in {value.casefold() for value in new_uuids}):
-            findings.append(_error("config", "fstab root is not a new filesystem UUID"))
+        expected = root_sources if root_sources is not None else {
+            "UUID=" + value for value in new_uuids}
+        valid = len(roots) == 1 and any(
+            roots[0] == value if value.startswith("/dev/mapper/")
+            else roots[0].casefold() == value.casefold() for value in expected)
+        if not valid:
+            findings.append(_error("config", "fstab root does not identify the new filesystem"))
     return findings
 
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11
+
+- Accept the planned encrypted root mapper during final configuration checks.
+- Ignore only the expected timestamp changes to runtime directories during copy verification.
+- Keep the progress indicator moving, show time since the last update, and report copy and verification steps in order.
+
 ## 0.1.10
 
 - Clear filesystem headers left in free space from a previous partition, which refused the format of a new encrypted volume.

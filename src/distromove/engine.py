@@ -266,7 +266,8 @@ class SystemBackend:
                 raise ValueError("cannot identify new ESP partition number")
             self._esp_number = int(number)
 
-    def copy(self, source: Source, r, journal: Journal) -> FreezeStats | None:
+    def copy(self, source: Source, r, journal: Journal,
+             progress: Callable[[str, int | None, int | None], None] | None = None) -> FreezeStats | None:
         self._watch(source, r)
         old_files = [swap.path for swap in source.swaps if swap.kind == "file"]
         ext4 = []
@@ -284,6 +285,8 @@ class SystemBackend:
                                  Path(volume.mountpoint),
                                  self._created[volume.volume_id].fs_uuid, filters))
         if ext4:
+            if progress is not None:
+                progress("ext4 copy", None, None)
             self._freeze = copy_ext4(r, ext4, journal)
             for pair in ext4:
                 self._references[str(pair.source)] = (
@@ -310,7 +313,9 @@ class SystemBackend:
                     s.id for s in info.subvolumes if s.path == ref.subvol_path)
                 destinations[(ref.fs_uuid, ref.subvol_path)] = BtrfsDestination(
                     path, new_uuid, id_map[old_id])
-            copy_from_snapshots(r, refs, destinations, journal=journal, watch=watch)
+            copy_from_snapshots(r, refs, destinations, journal=journal, watch=watch,
+                                on_stage=(lambda index, total: progress(
+                                    "Btrfs subvolume", index, total)) if progress else None)
             live = []
             live_excludes = {}
             for subvol in info.subvolumes:
@@ -330,6 +335,8 @@ class SystemBackend:
                 live_excludes[subvol.path] = tuple(children) + tuple(
                     str(Path(path).relative_to(item.source)) for path in old_files
                     if Path(path).is_relative_to(item.source))
+            if progress is not None:
+                progress("source manifests", None, None)
             refs_by_key = reference_manifests(refs, live)
             for ref in refs:
                 key = f"{ref.fs_uuid}:{ref.subvol_path}"
@@ -454,7 +461,8 @@ class SystemBackend:
             update_grub(chroot)
         self._watch(source, r)
 
-    def verify(self, source: Source, secrets: Secrets, r) -> VerifyReport:
+    def verify(self, source: Source, secrets: Secrets, r,
+               progress: Callable[[str, int | None, int | None], None] | None = None) -> VerifyReport:
         findings = []
         transformed = {"etc/fstab", "etc/crypttab", "etc/default/grub",
                        "etc/default/grub.d", "etc/initramfs-tools/hooks",
@@ -465,7 +473,10 @@ class SystemBackend:
                        "boot/grub/grub.cfg", "etc/snapper/configs/root",
                        # mkinitramfs builds in /var/tmp during the all-kernel initramfs update
                        "var/tmp"}
-        for reference, destination, excludes, excluded_names in self._references.values():
+        for index, (reference, destination, excludes, excluded_names) in enumerate(
+                self._references.values(), start=1):
+            if progress is not None:
+                progress("copy integrity", index, len(self._references))
             prefix = _volume_prefix(self.new_root, destination)
 
             def within(path: str) -> bool:
@@ -491,25 +502,40 @@ class SystemBackend:
             findings.extend(verify_copy(reference, destination, expected,
                                         exclude_paths=excludes,
                                         exclude_names=excluded_names,
-                                        expected_trees=trees))
+                                        expected_trees=trees,
+                                        expected_mtime_paths=tuple(local(path) for path in
+                                            ("tmp", "var/lib/os-prober") if within(path))))
+        if progress is not None:
+            progress("configuration", None, None)
         mapping = self._uuid_map(source, self._journal)
         new_ids = set(mapping.fs.values()) | set(mapping.luks.values()) | set(mapping.swap_uuid.values())
         old_ids = set(mapping.fs) | set(mapping.luks) | set(mapping.swap_uuid)
+        root_volume = next(v for v in source.volumes if v.role == "root")
+        root_sources = {"UUID=" + self._created[root_volume.volume_id].fs_uuid}
+        if root_volume.luks and root_volume.luks.mapper_name:
+            root_sources.add("/dev/mapper/" + mapping.mapper[root_volume.luks.mapper_name])
         findings.extend(verify_transformations(
             self.new_root, new_ids, old_ids,
-            {"old_entry": {self.context.loader.esp_uuid} & old_ids}))
+            {"old_entry": {self.context.loader.esp_uuid} & old_ids},
+            root_sources=root_sources))
         early = {key for volume_id, key in self._crypto.keyfiles.items()
                  if self._crypto.key_class.get(volume_id) == "initramfs"}
+        if progress is not None:
+            progress("initramfs", None, None)
         findings.extend(check_initramfs(r, self.new_root,
                                         bool(self._crypto.per_volume), early))
         encrypted = [self._created[v.volume_id].path for v in source.volumes if v.luks]
         encrypted += [self._created[s.volume_id].path for s in source.swaps if s.luks]
         if encrypted:
+            if progress is not None:
+                progress("unlock", None, None)
             credentials = {path: [secrets.new_passphrase] for path in encrypted}
             for volume_id, keyfile in self._crypto.keyfiles.items():
                 credentials[self._created[volume_id].path].append(
                     (self.new_root / keyfile.lstrip("/")).read_bytes())
             findings.extend(check_unlock(r, encrypted, credentials))
+        if progress is not None:
+            progress("EFI files and mounts", None, None)
         findings.extend(check_esp(self.new_root / "boot/efi", self.context.bootloader_id))
         expected = {v.mountpoint: self._created[v.volume_id].fs_uuid for v in source.volumes}
         expected["/boot/efi"] = self._new_esp_uuid
@@ -590,11 +616,13 @@ class MigrationBackend(Protocol):
     def initialise_tables(self, plan: MigrationPlan, r, journal: Journal) -> MigrationPlan: ...
     def create_storage(self, plan: MigrationPlan, source: Source, secrets: Secrets,
                        r, journal: Journal) -> None: ...
-    def copy(self, source: Source, r, journal: Journal) -> FreezeStats | None: ...
+    def copy(self, source: Source, r, journal: Journal,
+             progress: Callable[[str, int | None, int | None], None] | None = None) -> FreezeStats | None: ...
     def make_swaps(self, source: Source, secrets: Secrets, r, journal: Journal) -> None: ...
     def configure(self, source: Source, r, journal: Journal) -> None: ...
     def install_boot(self, source: Source, r, journal: Journal) -> None: ...
-    def verify(self, source: Source, secrets: Secrets, r) -> VerifyReport: ...
+    def verify(self, source: Source, secrets: Secrets, r,
+               progress: Callable[[str, int | None, int | None], None] | None = None) -> VerifyReport: ...
     def release_snapshots(self, r, journal: Journal) -> None: ...
     def pending_state(self, source: Source, journal: Journal) -> MigrationState: ...
     @property
@@ -692,7 +720,9 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
         backend.create_storage(plan, source, secrets, r, journal)
         phase = "copy"
         _event(emit, phase)
-        freeze = backend.copy(source, r, journal)
+        freeze = backend.copy(source, r, journal,
+                              lambda step, number, total: _event(
+                                  emit, "copy_detail", step=step, number=number, total=total))
         if freeze is not None and freeze.vanished_hot_passes:
             _event(emit, "copy_hot_vanished", passes=freeze.vanished_hot_passes)
         phase = "make_swaps"
@@ -706,7 +736,9 @@ def run_migration(plan: MigrationPlan, source: Source, secrets: Secrets, r,
         backend.install_boot(source, r, journal)
         phase = "verify"
         _event(emit, phase)
-        report = backend.verify(source, secrets, r)
+        report = backend.verify(source, secrets, r,
+                                lambda step, number, total: _event(
+                                    emit, "verify_detail", step=step, number=number, total=total))
         if not report.ok:
             _event(emit, "verify_findings",
                    findings=[{"severity": item.severity, "check": item.check,
