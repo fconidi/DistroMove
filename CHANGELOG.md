@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Read Btrfs subvolume paths consistently when a temporary top-level mount is present.
+- Show commands to pause and restart detected database writers before copying.
+
 ## 0.1.1
 
 - Allow a migration to start on a system that is being written to: usage counters no longer count as a change of the source between planning and the move.
