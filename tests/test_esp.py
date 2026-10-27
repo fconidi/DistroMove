@@ -24,6 +24,24 @@ def test_parse_efibootmgr():
     assert set(state.entries) == {"0000", "0001", "0002"}
 
 
+def test_parse_keeps_boot_order_numbers_the_firmware_has_no_entry_for():
+    text = FIXTURE.read_text().replace("BootOrder: 0001,0000,0002",
+                                       "BootOrder: 2001,0001,0000,0002,2002,2004")
+    state = parse_efibootmgr(text)
+    assert state.order == ("2001", "0001", "0000", "0002", "2002", "2004")
+    assert set(state.entries) == {"0000", "0001", "0002"}
+
+
+def test_parse_still_refuses_an_absent_or_repeated_boot_order():
+    without = "\n".join(line for line in FIXTURE.read_text().splitlines()
+                        if not line.startswith("BootOrder:"))
+    with pytest.raises(ValueError):
+        parse_efibootmgr(without)
+    with pytest.raises(ValueError):
+        parse_efibootmgr(FIXTURE.read_text().replace("BootOrder: 0001,0000,0002",
+                                                     "BootOrder: 0001,0000,0001"))
+
+
 def test_detect_loader_shim_and_plain_grub():
     state = parse_efibootmgr(FIXTURE.read_text())
     loader = detect_loader(state, {"6a4b0f1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b": {"debian": {"shimx64.efi", "grubx64.efi"}}})
@@ -74,6 +92,15 @@ def test_new_entry_first_others_kept_windows_untouched(tmp_path):
     assert number == "0003"
     assert ["efibootmgr", "-o", "0003,0001,0000,0002"] in r.calls
     assert ["efibootmgr", "--create-only", "--disk", "/dev/nvme0n1", "--part", "3", "--loader", "\\EFI\\moved\\shimx64.efi", "--label", "DistroMove"] in r.calls
+
+
+def test_new_entry_prepends_to_an_order_holding_firmware_placeholders(tmp_path):
+    r = FirmwareRunner(FIXTURE.read_text().replace("BootOrder: 0001,0000,0002",
+                                                   "BootOrder: 0001,0000,0002,2002,2004"))
+    j = Journal(tmp_path / "journal", host_root_uuid="host")
+    number = register_new_entry(r, "/dev/nvme0n1", 3, "\\EFI\\moved\\shimx64.efi", "DistroMove", j)
+    assert number == "0003"
+    assert ["efibootmgr", "-o", "0003,0001,0000,0002,2002,2004"] in r.calls
 
 
 def test_partial_registration_reported(tmp_path):

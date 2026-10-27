@@ -65,7 +65,9 @@ def parse_efibootmgr(text: str) -> BootState:
             if number in entries:
                 raise ValueError("duplicate boot entry")
             entries[number] = line.strip()
-    if order is None or any(number not in entries for number in order):
+    # Firmware keeps numbers in BootOrder for devices it has not materialised
+    # as entries (2002, 2004 on several boards); they are not ours to judge.
+    if order is None:
         raise ValueError("missing or invalid BootOrder")
     return BootState(order, entries, current)
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.12
+
+- Create the new boot entry on firmware whose boot order lists devices it has no entry for, which stopped a completed and verified migration before registration.
+
 ## 0.1.11
 
 - Accept the planned encrypted root mapper during final configuration checks.
