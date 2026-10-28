@@ -241,6 +241,7 @@ def launch() -> int:
     class Window(Gtk.ApplicationWindow):
         def __init__(self, app):
             super().__init__(application=app, title=tr("title"))
+            self.set_icon_name("org.syslinuxos.DistroMove")
             self.set_default_size(880, 680)
             self.set_size_request(680, 480)
             self.source = None

@@ -59,6 +59,8 @@ def build(output: Path) -> Path:
         copy(ROOT / "packaging/helper", root / "usr/lib/distromove/helper", executable=True)
         copy(ROOT / "packaging/org.syslinuxos.DistroMove.desktop",
              root / "usr/share/applications/org.syslinuxos.DistroMove.desktop")
+        copy(ROOT / "assets/org.syslinuxos.DistroMove.svg",
+             root / "usr/share/icons/hicolor/scalable/apps/org.syslinuxos.DistroMove.svg")
         copy(ROOT / "packaging/org.syslinuxos.distromove.policy",
              root / "usr/share/polkit-1/actions/org.syslinuxos.distromove.policy")
         copy(ROOT / "packaging/distromove.menu",

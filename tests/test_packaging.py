@@ -38,6 +38,7 @@ def test_deb_contains_only_program_files(package):
     expected = modules | {
         "usr/bin/distromove", "usr/lib/distromove/helper",
         "usr/share/applications/org.syslinuxos.DistroMove.desktop",
+        "usr/share/icons/hicolor/scalable/apps/org.syslinuxos.DistroMove.svg",
         "usr/share/polkit-1/actions/org.syslinuxos.distromove.policy",
         "etc/xdg/menus/applications-merged/distromove.menu",
         "usr/share/doc/distromove/README.md",
@@ -45,6 +46,14 @@ def test_deb_contains_only_program_files(package):
         "usr/share/doc/distromove/copyright",
     }
     assert contents(package) == expected
+
+
+def test_desktop_uses_packaged_application_icon(package, tmp_path):
+    subprocess.run(["dpkg-deb", "--extract", str(package), str(tmp_path)], check=True)
+    desktop = (tmp_path / "usr/share/applications/org.syslinuxos.DistroMove.desktop").read_text()
+    assert "Icon=org.syslinuxos.DistroMove\n" in desktop
+    icon = tmp_path / "usr/share/icons/hicolor/scalable/apps/org.syslinuxos.DistroMove.svg"
+    assert ET.parse(icon).getroot().attrib["viewBox"] == "0 0 256 256"
 
 
 def test_deb_directory_and_launcher_permissions(package):

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>DistroMove</title>
+  <desc>A source disk moves to a destination disk inside a circular badge.</desc>
+  <circle cx="128" cy="128" r="120" fill="#102b40"/>
+  <circle cx="128" cy="128" r="110" fill="none" stroke="#31d0bb" stroke-width="8"/>
+  <rect x="51" y="92" width="58" height="76" rx="12" fill="#f4fafb"/>
+  <path d="M63 113h34" stroke="#102b40" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="69" cy="149" r="5" fill="#102b40"/>
+  <rect x="147" y="92" width="58" height="76" rx="12" fill="#31d0bb"/>
+  <path d="M159 113h34" stroke="#102b40" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="165" cy="149" r="5" fill="#102b40"/>
+  <path d="M113 130h28m-11-12 12 12-12 12" fill="none" stroke="#f4fafb" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

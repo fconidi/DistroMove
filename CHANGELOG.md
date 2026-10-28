@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.23
+
+- Add a circular DistroMove icon to the application menu and window.
+
 ## 0.1.22
 
 - Show a Close button when migration activation succeeds, alongside the reminder to reboot into the new system.
