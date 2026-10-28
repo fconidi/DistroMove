@@ -121,6 +121,24 @@ def test_known_runtime_directory_mtime_does_not_hide_mode_change(tmp_path):
     assert errors(verify_copy(reference, dst, set(), expected_mtime_paths=("tmp",)))
 
 
+def test_generated_osprober_label_and_run_mtime_keep_other_copy_checks(tmp_path):
+    src, dst = tree(tmp_path)
+    for root in (src, dst):
+        (root / "run").mkdir()
+        (root / "var/lib/os-prober").mkdir(parents=True)
+    reference = build_manifest(src, sample=0)
+    (dst / "var/lib/os-prober/labels").write_text("generated")
+    before = (dst / "run").stat()
+    os.utime(dst / "run", ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    expected = {"var/lib/os-prober/labels"}
+    assert verify_copy(reference, dst, expected, expected_mtime_paths=("run",)) == []
+    (dst / "var/lib/os-prober/other").write_text("unexpected")
+    assert errors(verify_copy(reference, dst, expected, expected_mtime_paths=("run",)))
+    (dst / "var/lib/os-prober/other").unlink()
+    (dst / "run").chmod(0o700)
+    assert errors(verify_copy(reference, dst, expected, expected_mtime_paths=("run",)))
+
+
 def test_encrypted_root_fstab_accepts_only_its_planned_mapper(tmp_path):
     root = tmp_path / "root"
     (root / "etc").mkdir(parents=True)
@@ -193,13 +211,42 @@ def test_osprober_old_entry_is_allowed_but_grub_root_reference_is_not(tmp_path):
     (root / "etc/fstab").write_text("UUID=new-root / ext4 defaults 0 1\n")
     (root / "etc/default/grub").write_text("GRUB_CMDLINE_LINUX=''\n")
     grub = root / "boot/grub/grub.cfg"
-    grub.write_text("menuentry 'Previous system' --id=osprober-efi-123 {\n"
+    grub.write_text("menuentry 'Previous system' --id=osprober-efi-OLD-1111 {\n"
                     " search --fs-uuid --set=root OLD-1111\n}\n")
     assert not errors(verify_transformations(root, {"new-root"}, {"OLD-1111"},
-                                             {"old_entry": {"OLD-1111"}}))
+                                             {"osprober_entry": {"OLD-1111"}}))
     grub.write_text(grub.read_text() + "linux /vmlinuz root=UUID=OLD-1111\n")
     assert errors(verify_transformations(root, {"new-root"}, {"OLD-1111"},
-                                         {"old_entry": {"OLD-1111"}}))
+                                         {"osprober_entry": {"OLD-1111"}}))
+
+
+def test_debian_osprober_old_root_entry_is_not_a_new_root_reference(tmp_path):
+    root = tmp_path / "root"
+    (root / "etc/default").mkdir(parents=True)
+    (root / "boot/grub").mkdir(parents=True)
+    (root / "etc/fstab").write_text("UUID=new-root / ext4 defaults 0 1\n")
+    (root / "etc/default/grub").write_text("GRUB_CMDLINE_LINUX=''\n")
+    grub = root / "boot/grub/grub.cfg"
+    grub.write_text(
+        "menuentry 'Debian GNU/Linux' $menuentry_id_option 'gnulinux-simple-new-root' {\n"
+        " linux /vmlinuz root=UUID=new-root\n}\n"
+        "menuentry 'Previous system (on /dev/sda2)' $menuentry_id_option "
+        "'osprober-gnulinux-simple-OLD-1111' {\n"
+        " search --fs-uuid --set=root OLD-1111\n"
+        " linux /vmlinuz root=UUID=OLD-1111\n}\n"
+        "submenu 'Advanced options for previous system' $menuentry_id_option "
+        "'osprober-gnulinux-advanced-OLD-1111' {\n"
+        " menuentry 'Recovery' $menuentry_id_option 'osprober-gnulinux-recovery-OLD-1111' {\n"
+        "  linux /vmlinuz root=UUID=OLD-1111 single\n"
+        " }\n}\n")
+    allowed = {"osprober_entry": {"OLD-1111"}}
+    assert not errors(verify_transformations(root, {"new-root"}, {"OLD-1111"}, allowed))
+    approved = grub.read_text()
+    grub.write_text(approved + "linux /vmlinuz root=UUID=OLD-1111\n")
+    assert errors(verify_transformations(root, {"new-root"}, {"OLD-1111"}, allowed))
+    grub.write_text(approved.replace("osprober-gnulinux-simple-OLD-1111",
+                                     "osprober-gnulinux-simple-OTHER"))
+    assert errors(verify_transformations(root, {"new-root"}, {"OLD-1111"}, allowed))
 
 
 def test_expected_old_menu_entry_must_exist(tmp_path):

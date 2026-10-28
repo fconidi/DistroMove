@@ -101,19 +101,20 @@ def _read(root: Path, relative: str) -> str | None:
 def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
                            allowed_roles: Mapping[str, set[str]], *,
                            root_sources: set[str] | None = None) -> list[Finding]:
-    """Check new boot configuration; old IDs are allowed only in the old entry."""
+    """Check new boot configuration; old IDs belong only to identified old entries."""
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         return [_error("config", "copied root is unavailable")]
-    if set(allowed_roles) - {"old_entry"}:
-        raise ValueError("only the old entry can allow an old UUID")
+    if set(allowed_roles) - {"old_entry", "osprober_entry"}:
+        raise ValueError("only identified old entries can allow an old UUID")
     allowed_old = {value.casefold() for value in allowed_roles.get("old_entry", set())}
-    if allowed_old - {value.casefold() for value in old_uuids}:
+    allowed_osprober = {value.casefold() for value in allowed_roles.get("osprober_entry", set())}
+    if (allowed_old | allowed_osprober) - {value.casefold() for value in old_uuids}:
         raise ValueError("allowed old-entry UUID is not an old identity")
     files = ("etc/fstab", "etc/crypttab", "etc/default/grub",
              "etc/initramfs-tools/conf.d/resume", "boot/grub/grub.cfg")
     findings = []
-    old_grub_entry = ""
+    old_grub_entries: list[tuple[str, set[str]]] = []
     for relative in files:
         content = _read(root, relative)
         if content is None:
@@ -121,9 +122,11 @@ def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
                 findings.append(_error("config", f"{relative}: missing or unsafe"))
             continue
         if relative == "boot/grub/grub.cfg":
-            content, old_grub_entry = _split_old_grub_entry(content)
-            for name, value in find_old_uuids({relative: old_grub_entry}, old_uuids, {}):
-                if value.casefold() not in allowed_old:
+            content, old_grub_entries = _split_old_grub_entry(
+                content, allowed_old, allowed_osprober)
+            for entry, permitted in old_grub_entries:
+                for name, value in find_old_uuids({relative: entry}, old_uuids,
+                                                  {relative: permitted}):
                     findings.append(_error("config", f"{name}: unapproved old UUID {value}"))
         for name, value in find_old_uuids({relative: content}, old_uuids, {}):
             findings.append(_error("config", f"{name}: old UUID {value}"))
@@ -137,8 +140,10 @@ def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
                                           old_uuids, {}):
             if value.casefold() not in allowed_old:
                 findings.append(_error("config", f"{name}: unapproved old UUID {value}"))
-    if allowed_old and not any(value in (old_script or "").casefold() +
-                               old_grub_entry.casefold() for value in allowed_old):
+    known_old = (old_script or "").casefold() + "".join(
+        entry for entry, _ in old_grub_entries).casefold()
+    if (allowed_old or allowed_osprober) and not any(
+            value in known_old for value in allowed_old | allowed_osprober):
         findings.append(_error("config", "old-system menu entry is absent"))
     fstab = _read(root, "etc/fstab")
     if fstab is not None and new_uuids:
@@ -155,30 +160,42 @@ def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
     return findings
 
 
-def _split_old_grub_entry(content: str) -> tuple[str, str]:
+def _split_old_grub_entry(content: str, old_entry: set[str], osprober_entry: set[str]
+                          ) -> tuple[str, list[tuple[str, set[str]]]]:
     normal, old = [], []
     block = []
     depth = 0
+    permitted: set[str] | None = None
     for line in content.splitlines(keepends=True):
-        if not block and re.search(
-                r"^\s*menuentry\b.*--id(?:=|\s+)['\"]?"
-                r"(?:distromove-old|osprober-[A-Za-z0-9_-]+)\b", line):
-            block = [line]
-            depth = line.count("{") - line.count("}")
-            if depth <= 0 and "{" in line:
-                old.extend(block)
-                block = []
-            continue
+        if not block and re.match(r"^\s*(?:menuentry|submenu)\b", line):
+            match = re.search(
+                r"(?:--id(?:=|\s+)|\$menuentry_id_option\s+)['\"]?([^'\"\s{}]+)", line)
+            if match:
+                entry_id = match[1].casefold()
+                if entry_id == "distromove-old":
+                    permitted = old_entry
+                elif entry_id.startswith("osprober-") and any(
+                        entry_id.endswith("-" + value) for value in osprober_entry):
+                    permitted = osprober_entry
+                else:
+                    permitted = None
+                if permitted is not None:
+                    block = [line]
+                    depth = line.count("{") - line.count("}")
+                    if depth <= 0 and "{" in line:
+                        old.append(("".join(block), permitted))
+                        block = []
+                    continue
         if block:
             block.append(line)
             depth += line.count("{") - line.count("}")
             if depth <= 0 and any("{" in item for item in block):
-                old.extend(block)
+                old.append(("".join(block), permitted))
                 block = []
         else:
             normal.append(line)
     normal.extend(block)  # incomplete blocks are never granted the exception
-    return "".join(normal), "".join(old)
+    return "".join(normal), old
 
 
 def check_initramfs(r, root: Path, luks: bool,

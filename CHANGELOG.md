@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.20
+
+- Accept the generated `os-prober` entry for the previous root while still rejecting its UUID in the migrated system's boot entries.
+- Account for the runtime `/run` directory timestamp and the exact `os-prober` label file created while configuring the new system.
+
 ## 0.1.19
 
 - Allow live ext4 migrations when a metadata scan takes more than 20 seconds, while keeping the final filesystem freeze bounded by an independent watchdog.

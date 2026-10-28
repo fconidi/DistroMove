@@ -472,6 +472,8 @@ class SystemBackend:
                        "etc/initramfs-tools/conf.d/resume",
                        "etc/initramfs-tools/hooks/distromove-crypt",
                        "boot/grub/grub.cfg", "etc/snapper/configs/root",
+                       # update-grub writes this exact cache file in the copied system
+                       "var/lib/os-prober/labels",
                        # mkinitramfs builds in /var/tmp during the all-kernel initramfs update
                        "var/tmp"}
         for index, (reference, destination, excludes, excluded_names) in enumerate(
@@ -505,7 +507,8 @@ class SystemBackend:
                                         exclude_names=excluded_names,
                                         expected_trees=trees,
                                         expected_mtime_paths=tuple(local(path) for path in
-                                            ("tmp", "var/lib/os-prober") if within(path))))
+                                            ("tmp", "run", "var/lib/os-prober")
+                                            if within(path))))
         if progress is not None:
             progress("configuration", None, None)
         mapping = self._uuid_map(source, self._journal)
@@ -517,7 +520,8 @@ class SystemBackend:
             root_sources.add("/dev/mapper/" + mapping.mapper[root_volume.luks.mapper_name])
         findings.extend(verify_transformations(
             self.new_root, new_ids, old_ids,
-            {"old_entry": {self.context.loader.esp_uuid} & old_ids},
+            {"old_entry": {self.context.loader.esp_uuid} & old_ids,
+             "osprober_entry": {root_volume.fs_uuid} & old_ids},
             root_sources=root_sources))
         early = {key for volume_id, key in self._crypto.keyfiles.items()
                  if self._crypto.key_class.get(volume_id) == "initramfs"}
