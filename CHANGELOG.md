@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.22
+
+- Show a Close button when migration activation succeeds, alongside the reminder to reboot into the new system.
+
 ## 0.1.21
 
 - Recognize the previous-system boot entry when migrating an encrypted root while reusing its EFI partition, and verify that the generated entry points to the expected loader.

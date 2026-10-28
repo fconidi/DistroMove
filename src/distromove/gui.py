@@ -339,6 +339,10 @@ def launch() -> int:
             self.next.get_style_context().add_class("suggested-action")
             self.next.connect("clicked", self.go_next)
             controls.pack_end(self.next, False, False, 0)
+            self.close_button = Gtk.Button(label=tr("close"))
+            self.close_button.get_style_context().add_class("suggested-action")
+            self.close_button.connect("clicked", lambda *_: self.close())
+            controls.pack_end(self.close_button, False, False, 0)
             self._build_source()
             self._build_encryption()
             self._build_summary()
@@ -386,6 +390,7 @@ def launch() -> int:
             self.back.set_sensitive(back_enabled(name, busy=self.busy,
                                                  result_ok=self.result_ok))
             self.next.set_visible(name in {"source", "destination", "encryption", "summary"})
+            self.close_button.set_visible(name == "result" and self.result_ok is True)
             self.next.set_sensitive(not self.busy and self.source is not None)
             self.next.set_label(tr("start") if name == "summary" else tr("next"))
             self.delete_nav.set_visible(bool(self.state and self.state.get("phase") in
