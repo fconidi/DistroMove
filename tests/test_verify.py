@@ -70,6 +70,17 @@ def test_top_level_holding_only_excluded_subvolumes_is_a_valid_empty_reference(t
     assert errors(verify_copy(reference, dst, set()))
 
 
+def test_empty_btrfs_subvolume_is_valid_only_when_destination_is_empty(tmp_path):
+    src, dst = tmp_path / "empty-subvolume", tmp_path / "copy"
+    src.mkdir()
+    dst.mkdir()
+    reference = build_manifest(src, kind="btrfs-snapshot", sample=0)
+    assert not reference.entries
+    assert verify_copy(reference, dst, set()) == []
+    (dst / "stray").write_text("unexpected")
+    assert any("stray" in finding.detail for finding in errors(verify_copy(reference, dst, set())))
+
+
 def test_child_mount_excluded_on_both_sides(tmp_path):
     src, dst = tree(tmp_path)
     (src / "boot/efi").mkdir()

@@ -54,8 +54,9 @@ def verify_copy(reference: Manifest, dst: Path,
     excluded = tuple(_relative(value) for value in exclude_paths)
     if any("/" in name or name in {"", ".", ".."} for name in exclude_names):
         raise ValueError("invalid excluded entry name")
-    if not reference.entries and not exclude_paths:
-        # emptiness is only legitimate when every child was excluded (a top-level of subvolumes)
+    if not reference.entries and not exclude_paths and reference.kind != "btrfs-snapshot":
+        # A stable Btrfs snapshot can represent an empty subvolume. Ext4 and live
+        # references without exclusions still need entries to prove a useful copy.
         return [_error("copy", "reference manifest is empty")]
     for path in reference.entries:
         _relative(path)
