@@ -518,11 +518,14 @@ class SystemBackend:
         root_sources = {"UUID=" + self._created[root_volume.volume_id].fs_uuid}
         if root_volume.luks and root_volume.luks.mapper_name:
             root_sources.add("/dev/mapper/" + mapping.mapper[root_volume.luks.mapper_name])
+        expected_old_script = old_system_entry(
+            self.context.loader, source.esp.partition.uuid or "",
+            any(v.luks for v in source.volumes), self.context.osprober_sees_old)
         findings.extend(verify_transformations(
             self.new_root, new_ids, old_ids,
             {"old_entry": {self.context.loader.esp_uuid} & old_ids,
              "osprober_entry": {root_volume.fs_uuid} & old_ids},
-            root_sources=root_sources))
+            root_sources=root_sources, expected_old_script=expected_old_script))
         early = {key for volume_id, key in self._crypto.keyfiles.items()
                  if self._crypto.key_class.get(volume_id) == "initramfs"}
         if progress is not None:

@@ -100,7 +100,8 @@ def _read(root: Path, relative: str) -> str | None:
 
 def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
                            allowed_roles: Mapping[str, set[str]], *,
-                           root_sources: set[str] | None = None) -> list[Finding]:
+                           root_sources: set[str] | None = None,
+                           expected_old_script: str | None = None) -> list[Finding]:
     """Check new boot configuration; old IDs belong only to identified old entries."""
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -140,11 +141,19 @@ def verify_transformations(root: Path, new_uuids: set[str], old_uuids: set[str],
                                           old_uuids, {}):
             if value.casefold() not in allowed_old:
                 findings.append(_error("config", f"{name}: unapproved old UUID {value}"))
-    known_old = (old_script or "").casefold() + "".join(
-        entry for entry, _ in old_grub_entries).casefold()
-    if (allowed_old or allowed_osprober) and not any(
-            value in known_old for value in allowed_old | allowed_osprober):
-        findings.append(_error("config", "old-system menu entry is absent"))
+    if expected_old_script is not None:
+        if old_script != expected_old_script:
+            findings.append(_error("config", "old-system entry differs from the planned loader"))
+        marker = 'exec tail -n +4 "$0"\n'
+        expected_menu = expected_old_script.partition(marker)[2]
+        if not expected_menu or expected_menu not in {entry for entry, _ in old_grub_entries}:
+            findings.append(_error("config", "old-system menu entry is absent"))
+    else:
+        known_old = (old_script or "").casefold() + "".join(
+            entry for entry, _ in old_grub_entries).casefold()
+        if (allowed_old or allowed_osprober) and not any(
+                value in known_old for value in allowed_old | allowed_osprober):
+            findings.append(_error("config", "old-system menu entry is absent"))
     fstab = _read(root, "etc/fstab")
     if fstab is not None and new_uuids:
         roots = [line.split()[0] for line in fstab.splitlines()

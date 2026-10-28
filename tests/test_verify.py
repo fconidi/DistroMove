@@ -261,6 +261,40 @@ def test_expected_old_menu_entry_must_exist(tmp_path):
                                {"old_entry": {"OLD-1111"}})))
 
 
+def test_reused_esp_old_menu_uses_esp_uuid_not_old_root_uuid(tmp_path):
+    root = tmp_path / "root"
+    (root / "etc/grub.d").mkdir(parents=True)
+    (root / "etc/default").mkdir(parents=True)
+    (root / "boot/grub").mkdir(parents=True)
+    (root / "etc/fstab").write_text("UUID=NEW-ROOT / ext4 defaults 0 1\n")
+    (root / "etc/default/grub").write_text("GRUB_CMDLINE_LINUX=''\n")
+    menu = ("menuentry 'Previous system' --id=distromove-old {\n"
+            "    search --no-floppy --fs-uuid --set=root DE73-523D\n"
+            "    chainloader /EFI/SysLinuxOS/shimx64.efi\n"
+            "}\n")
+    script = "#!/bin/sh\n# DistroMove old-system entry\nexec tail -n +4 \"$0\"\n" + menu
+    (root / "etc/grub.d/40_distromove_old").write_text(script)
+    grub = root / "boot/grub/grub.cfg"
+    grub.write_text("menuentry 'New system' --id=new-root {\n}\n" + menu)
+    roles = {"old_entry": set(), "osprober_entry": {"OLD-ROOT"}}
+
+    assert not errors(verify_transformations(
+        root, {"NEW-ROOT"}, {"OLD-ROOT", "OLD-LUKS"}, roles,
+        expected_old_script=script))
+
+    grub.write_text("menuentry 'New system' --id=new-root {\n}\n")
+    assert any("old-system menu entry is absent" in f.detail for f in errors(
+        verify_transformations(root, {"NEW-ROOT"}, {"OLD-ROOT", "OLD-LUKS"}, roles,
+                               expected_old_script=script)))
+
+    grub.write_text("menuentry 'New system' --id=new-root {\n}\n" + menu)
+    (root / "etc/grub.d/40_distromove_old").write_text(script.replace(
+        "SysLinuxOS/shimx64.efi", "other/grubx64.efi"))
+    assert any("old-system entry differs" in f.detail for f in errors(
+        verify_transformations(root, {"NEW-ROOT"}, {"OLD-ROOT", "OLD-LUKS"}, roles,
+                               expected_old_script=script)))
+
+
 class ArchiveRunner:
     def __init__(self, listings):
         self.listings = listings

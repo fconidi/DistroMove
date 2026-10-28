@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.21
+
+- Recognize the previous-system boot entry when migrating an encrypted root while reusing its EFI partition, and verify that the generated entry points to the expected loader.
+
 ## 0.1.20
 
 - Accept the generated `os-prober` entry for the previous root while still rejecting its UUID in the migrated system's boot entries.
