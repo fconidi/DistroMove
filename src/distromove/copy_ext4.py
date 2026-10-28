@@ -431,9 +431,15 @@ def final_pass(r: Runner, pairs: list[CopyPair], group: FreezeGroup,
 
 def copy_ext4(r: Runner, pairs: list[CopyPair], journal: Journal,
               on_progress: Callable[[PassStats], None] | None = None,
-              threshold_s: float = 20.0, max_rounds: int = 4) -> FreezeStats:
+              convergence_s: float = 60.0, freeze_max_s: float = 180.0,
+              max_rounds: int = 4) -> FreezeStats:
+    """Converge while live, then freeze with a separate watchdog deadline.
+
+    A large tree can take more than 20 seconds to scan even when no files changed.
+    The live-pass target must therefore not also limit the frozen final pass.
+    """
     _check_pairs(pairs, journal, r)
-    if threshold_s <= 0 or max_rounds < 1:
+    if convergence_s <= 0 or freeze_max_s <= 0 or max_rounds < 1:
         raise ValueError("invalid convergence limit")
     began = None
     vanished_hot_passes = 0
@@ -441,11 +447,11 @@ def copy_ext4(r: Runner, pairs: list[CopyPair], journal: Journal,
         results = [hot_pass(r, p.source, p.destination, list(p.filters), on_progress) for p in pairs]
         vanished_hot_passes += sum(item.vanished_source_files for item in results)
         began = results[0].started_at if began is None else began
-        if sum(item.seconds for item in results) <= threshold_s:
+        if sum(item.seconds for item in results) <= convergence_s:
             break
     else:
         raise FreezeTooLong("ext4 copy did not converge before freeze")
-    group = FreezeGroup(r, [p.mountpoint for p in pairs], journal, threshold_s)
+    group = FreezeGroup(r, [p.mountpoint for p in pairs], journal, freeze_max_s)
     with group:
         result = final_pass(r, pairs, group, began)
     return (replace(result, vanished_hot_passes=vanished_hot_passes)

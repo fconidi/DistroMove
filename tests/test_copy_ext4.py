@@ -455,8 +455,30 @@ def test_convergence_until_under_threshold(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_probe_thawed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(module, "final_pass", lambda *args: "finished")
     r = FreezeRunner(j)
-    assert copy_ext4(r, [pair], j, threshold_s=20.0) == "finished"
+    assert copy_ext4(r, [pair], j, convergence_s=20.0, freeze_max_s=20.0) == "finished"
     assert len(called) == 2
+
+
+def test_large_tree_scan_can_enter_bounded_freeze(tmp_path, monkeypatch):
+    from distromove import copy_ext4 as module
+    pair = pair_in(tmp_path)
+    journal = Journal(tmp_path / "journal", host_root_uuid="host-root")
+    mount_journal(journal, pair)
+    durations = iter((310.0, 28.0, 27.0, 26.0))
+    rounds = []
+    deadlines = []
+    monkeypatch.setattr(module, "hot_pass", lambda *args: (
+        rounds.append(1) or PassStats(next(durations), 0, time.time())))
+    monkeypatch.setattr(module, "_probe_thawed", lambda *_args, **_kwargs: True)
+
+    def final_pass(_r, _pairs, group, _started_at):
+        deadlines.append(group.max_seconds)
+        return FreezeStats(1.0, 0, object(), {})
+
+    monkeypatch.setattr(module, "final_pass", final_pass)
+    copy_ext4(FreezeRunner(journal), [pair], journal)
+    assert len(rounds) == 2
+    assert deadlines == [180.0]
 
 
 def test_vanished_hot_pass_is_reported_after_a_later_clean_round(tmp_path, monkeypatch):
@@ -469,7 +491,8 @@ def test_vanished_hot_pass_is_reported_after_a_later_clean_round(tmp_path, monke
     monkeypatch.setattr(module, "hot_pass", lambda *args: next(passes))
     monkeypatch.setattr(module, "_probe_thawed", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(module, "final_pass", lambda *args: FreezeStats(1.0, 0, object(), {}))
-    result = copy_ext4(FreezeRunner(j), [pair], j, threshold_s=20.0)
+    result = copy_ext4(FreezeRunner(j), [pair], j,
+                       convergence_s=20.0, freeze_max_s=20.0)
     assert result.vanished_hot_passes == 1
 
 
@@ -480,7 +503,8 @@ def test_FreezeTooLong_after_max_rounds(tmp_path, monkeypatch):
     mount_journal(j, pair)
     monkeypatch.setattr(module, "hot_pass", lambda *args: PassStats(21.0, 0, time.time()))
     with pytest.raises(FreezeTooLong, match="converge"):
-        copy_ext4(Runner(), [pair], j, threshold_s=20.0, max_rounds=2)
+        copy_ext4(Runner(), [pair], j, convergence_s=20.0, freeze_max_s=20.0,
+                  max_rounds=2)
     assert not any(e["op"] == "freeze_window" for e in read_journal(j.path) if e["type"] == "intent")
 
 

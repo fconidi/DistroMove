@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.19
+
+- Allow live ext4 migrations when a metadata scan takes more than 20 seconds, while keeping the final filesystem freeze bounded by an independent watchdog.
+
 ## 0.1.18
 
 - Accept an empty Btrfs subvolume during copy verification when its destination is also empty.

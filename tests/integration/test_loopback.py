@@ -473,7 +473,7 @@ def test_real_freeze_under_write_load_thaws_and_converges(env):
     try:
         stats = copy_ext4(env.r, [CopyPair(src_mount, staging, src_mount,
                                            dest.spec("root")["fs_uuid"], ())], dest.journal,
-                          threshold_s=20.0)
+                          convergence_s=20.0, freeze_max_s=20.0)
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old)

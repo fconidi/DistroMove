@@ -116,7 +116,9 @@ class LoopBackend:
             time.sleep(self.s["sleep_before_copy"])
         src = Path(self.s["src_mount"])
         pair = CopyPair(src, self.staging, src, self.created["root"].fs_uuid, ())
-        self.freeze = copy_ext4(r, [pair], journal, threshold_s=self.s.get("threshold", 20.0))
+        self.freeze = copy_ext4(r, [pair], journal,
+                                convergence_s=self.s.get("threshold", 20.0),
+                                freeze_max_s=self.s.get("threshold", 20.0))
         return self.freeze
 
     def make_swaps(self, source, secrets, r, journal):
