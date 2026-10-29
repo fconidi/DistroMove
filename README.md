@@ -22,10 +22,39 @@ without a partition table can be initialised as GPT only after a scan finds no
 recognised signatures and you type its hardware identity. That scan does not
 prove the disk is free of data.
 
-## Install and use
+## Install
 
-Install the Debian package and start **DistroMove** from the SysLinuxOS Tools
-menu, or run `distromove`. The interface stays in your user session and asks for
+On SysLinuxOS or Debian 13 (amd64), install from the
+[SysLinuxOS Tools APT repository](https://github.com/fconidi/SysLinuxOS-Tools).
+If the repository is already configured:
+
+```bash
+sudo apt update
+sudo apt install distromove
+```
+
+To configure it first, download and run its setup script, then install the
+package:
+
+```bash
+curl -fsSLO https://fconidi.github.io/SysLinuxOS-Tools/client/install-repo.sh
+sudo bash install-repo.sh
+sudo apt install distromove
+```
+
+For a direct download without adding the repository, get the package from the
+[v0.1.23 release](https://github.com/fconidi/DistroMove/releases/tag/v0.1.23)
+and let APT install its dependencies:
+
+```bash
+curl -fLO https://github.com/fconidi/DistroMove/releases/download/v0.1.23/distromove_0.1.23_all.deb
+sudo apt install ./distromove_0.1.23_all.deb
+```
+
+## Use
+
+Start **DistroMove** from the SysLinuxOS Tools menu, or run `distromove`.
+The interface stays in your user session and asks for
 administrator authentication when it starts its privileged helper. Review the
 source volumes and any active database warning; select a disk and size for each
 volume, then review the read-only plan. If the source is encrypted, enter a new
