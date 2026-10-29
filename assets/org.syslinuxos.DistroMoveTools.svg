@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>SysLinuxOS Tools</title>
+  <desc>A toolbox inside a circular SysLinuxOS badge.</desc>
+  <circle cx="128" cy="128" r="120" fill="#102b40"/>
+  <circle cx="128" cy="128" r="110" fill="none" stroke="#31d0bb" stroke-width="8"/>
+  <path d="M101 91V76c0-8 6-14 14-14h26c8 0 14 6 14 14v15" fill="none" stroke="#f4fafb" stroke-width="10" stroke-linejoin="round"/>
+  <rect x="51" y="91" width="154" height="105" rx="16" fill="#31d0bb"/>
+  <path d="M51 107c0-9 7-16 16-16h122c9 0 16 7 16 16v26H51z" fill="#f4fafb"/>
+  <path d="M51 133h154" stroke="#102b40" stroke-width="7"/>
+  <rect x="114" y="120" width="28" height="28" rx="5" fill="#102b40"/>
+  <path d="M122 134h12" stroke="#f4fafb" stroke-width="5" stroke-linecap="round"/>
+</svg>

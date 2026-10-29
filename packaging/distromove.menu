@@ -4,6 +4,7 @@
   <Name>Applications</Name>
   <Menu>
     <Name>SysLinuxOS Tools</Name>
+    <Directory>distromove-tools.directory</Directory>
     <Include>
       <Filename>org.syslinuxos.DistroMove.desktop</Filename>
     </Include>

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.24
+
+- Add an icon for the SysLinuxOS Tools application menu on Debian systems.
+
 ## 0.1.23
 
 - Add a circular DistroMove icon to the application menu and window.
