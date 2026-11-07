@@ -88,18 +88,17 @@ def _references_old(live: SystemSnapshot, old: list[VolumeIdentity],
             reasons.append("device-mapper identity is unknown")
         elif len(parts) == 2 and any(value in parts[1].casefold() for value in luks_ids):
             reasons.append("old LUKS mapper is active")
-    if luks_ids:
-        new_luks = {item.luks_uuid.replace("-", "").casefold() for item in new
-                    if item.luks_uuid}
-        observed = {parts[0]: parts[1].casefold() for item in live.mappers
-                    if len(parts := item.split(maxsplit=1)) == 2}
-        references = "\n".join([live.fstab, live.crypttab,
-                                *(mount.source for mount in live.mounts),
-                                *(swap.path for swap in live.swaps)])
-        for name in set(re.findall(r"/dev/mapper/([A-Za-z0-9_.+-]+)", references)):
-            identity = observed.get(name, "")
-            if not any(value in identity for value in new_luks):
-                reasons.append(f"mapper {name} is not proven to belong to a new volume")
+    new_luks = {item.luks_uuid.replace("-", "").casefold() for item in new
+                if item.luks_uuid}
+    observed = {parts[0]: parts[1].casefold() for item in live.mappers
+                if len(parts := item.split(maxsplit=1)) == 2}
+    references = "\n".join([live.fstab, live.crypttab,
+                            *(mount.source for mount in live.mounts),
+                            *(swap.path for swap in live.swaps)])
+    for name in set(re.findall(r"/dev/mapper/([A-Za-z0-9_.+-]+)", references)):
+        identity = observed.get(name, "")
+        if not any(value in identity for value in new_luks):
+            reasons.append(f"mapper {name} is not proven to belong to a new volume")
     for swap in live.swaps:
         text = " ".join(value for value in (swap.path, swap.uuid,
                                               swap.luks.luks_uuid if swap.luks else None)
@@ -149,6 +148,11 @@ def can_delete_old(state: MigrationState, live: SystemSnapshot, *,
         reasons.append("running root is not the migrated root")
     if state.uefi_entry and (live.boot_current or "").upper() != state.uefi_entry.upper():
         reasons.append("firmware did not boot the new entry")
+    if "uefi_entry" not in state.deletion_done:
+        original = state.old_uefi_record
+        number = original[4:8].upper() if original else None
+        if not original or live.boot_entries.get(number) != original:
+            reasons.append("original old firmware entry is missing or changed")
     if state.phase == "ACTIVATED" and state.deletion_done:
         reasons.append("deletion progress exists outside DELETING phase")
     expected = [*state.old_volumes, *state.new_volumes, state.old_esp, state.new_esp]
@@ -192,6 +196,9 @@ def can_delete_old(state: MigrationState, live: SystemSnapshot, *,
                      item.casefold() for item in state.deletion_done}]
     reasons.extend(_references_old(live, remaining, state.new_volumes, resolve))
     if delete_old_esp:
+        if f"old_esp:{state.old_esp.partuuid.casefold()}" not in {
+                item.casefold() for item in state.deletion_done}:
+            reasons.extend(_references_old(live, [state.old_esp], state.new_volumes, resolve))
         reasons.extend(_esp_reasons(state, live))
     return DeleteDecision(not reasons, reasons)
 

@@ -39,6 +39,8 @@ def test_deb_contains_only_program_files(package):
         "usr/bin/distromove", "usr/lib/distromove/helper",
         "usr/share/applications/org.syslinuxos.DistroMove.desktop",
         "usr/share/icons/hicolor/scalable/apps/org.syslinuxos.DistroMove.svg",
+        "usr/share/icons/hicolor/scalable/categories/org.syslinuxos.DistroMoveTools.svg",
+        "usr/share/desktop-directories/distromove-tools.directory",
         "usr/share/polkit-1/actions/org.syslinuxos.distromove.policy",
         "etc/xdg/menus/applications-merged/distromove.menu",
         "usr/share/doc/distromove/README.md",

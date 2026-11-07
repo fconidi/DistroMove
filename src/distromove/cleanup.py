@@ -125,17 +125,11 @@ def _reconcile(state: MigrationState, root: Path, journal: Journal,
 
 
 def _old_bootnum(state: MigrationState, live: SystemSnapshot) -> str:
-    matches = []
-    for number, line in live.boot_entries.items():
-        target = loader_of(line)
-        if target is None or target[0].casefold() != state.old_esp.partuuid.casefold():
-            continue
-        path = target[1].replace("/", "\\").casefold()
-        if path.startswith(f"\\efi\\{state.bootloader_id_old.casefold()}\\"):
-            matches.append(number)
-    if len(matches) != 1:
-        raise ValueError("old UEFI entry is missing or ambiguous")
-    return matches[0]
+    original = state.old_uefi_record
+    number = original[4:8].upper() if original else None
+    if not original or live.boot_entries.get(number) != original:
+        raise ValueError("original old UEFI entry is missing or changed")
+    return number
 
 
 def _verify_completed_entries(state: MigrationState, root: Path,

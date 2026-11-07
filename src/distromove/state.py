@@ -32,6 +32,7 @@ class MigrationState:
     uefi_entry: str | None
     verified: bool
     deletion_done: list[str]
+    old_uefi_record: str | None = None
 
 
 def _validate(state: MigrationState) -> None:
@@ -45,6 +46,8 @@ def _validate(state: MigrationState) -> None:
             or not state.bootloader_id_new or not state.bootloader_id_old
             or state.bootloader_id_new.casefold() == state.bootloader_id_old.casefold()
             or (state.uefi_entry is not None and not _BOOTNUM.fullmatch(state.uefi_entry))
+            or (state.old_uefi_record is not None and
+                not re.match(r"Boot[0-9A-Fa-f]{4}[* ]", state.old_uefi_record))
             or (state.phase in {"ACTIVATED", "DELETING", "DELETED"}
                 and state.uefi_entry is None)
             or len(set(state.deletion_done)) != len(state.deletion_done)):

@@ -180,6 +180,26 @@ def test_old_esp_deleted_only_when_requested_and_separate(tmp_path):
     assert ["sgdisk", "--delete=2", "/dev/disk/by-id/disk"] in system.calls
 
 
+def test_old_esp_mount_blocks_all_mutation(tmp_path):
+    from distromove.model import MountInfo
+    root, s, _, journal, system = setup(tmp_path)
+    system.snapshot = replace(system.snapshot, mounts=[*system.snapshot.mounts,
+        MountInfo("/dev/vdb2", "/mnt/old-esp", "vfat", "rw")])
+    with pytest.raises(ValueError, match="deletion guard refused"):
+        cleanup(root, s, journal, system, delete_old_esp=True)
+    assert system.calls == []
+
+
+def test_replaced_old_uefi_entry_blocks_all_mutation(tmp_path):
+    root, s, _, journal, system = setup(tmp_path)
+    entries = dict(system.snapshot.boot_entries)
+    entries["0009"] = entries.pop("0001").replace("Boot0001", "Boot0009")
+    system.snapshot = replace(system.snapshot, boot_entries=entries)
+    with pytest.raises(ValueError, match="original old firmware entry"):
+        cleanup(root, s, journal, system)
+    assert system.calls == []
+
+
 def test_optional_luks_erase_precedes_partition_delete(tmp_path):
     root, s, _, journal, system = setup(tmp_path)
     result = cleanup(root, s, journal, system, erase_luks_header=True)

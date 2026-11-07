@@ -10,6 +10,8 @@ OLD_PART = "11111111-1111-4111-8111-111111111111"
 NEW_PART = "22222222-2222-4222-8222-222222222222"
 OLD_ESP = "33333333-3333-4333-8333-333333333333"
 NEW_ESP = "44444444-4444-4444-8444-444444444444"
+OLD_ENTRY = (f"Boot0001* Debian HD(1,GPT,{OLD_ESP},0x800,0x1000)"
+             "/File(\\EFI\\debian\\shimx64.efi)")
 
 
 def v(name, role, part, fs, luks=None, *, wwn="wwn-disk"):
@@ -25,19 +27,17 @@ def state():
                           [v("new-root", "root", NEW_PART, "new-root")],
                           v("old-esp", "esp", OLD_ESP, "OLD-1111"),
                           v("new-esp", "esp", NEW_ESP, "NEW-2222"),
-                          "debian-moved", "debian", "0003", True, [])
+                          "debian-moved", "debian", "0003", True, [], OLD_ENTRY)
 
 
 def live(s=None):
     s = s or state()
-    old_entry = (f"Boot0001* Debian HD(1,GPT,{OLD_ESP},0x800,0x1000)"
-                 "/File(\\EFI\\debian\\shimx64.efi)")
     new_entry = (f"Boot0003* Moved HD(1,GPT,{NEW_ESP},0x800,0x1000)"
                  "/File(\\EFI\\debian-moved\\shimx64.efi)")
     return SystemSnapshot("UUID=new-root / ext4 defaults 0 1\n", "",
                           [MountInfo("UUID=new-root", "/", "ext4", "rw")], [], [],
                           {OLD_ESP: ["debian"], NEW_ESP: ["debian-moved"]},
-                          "0003", {"0001": old_entry, "0003": new_entry},
+                          "0003", {"0001": OLD_ENTRY, "0003": new_entry},
                           [*s.old_volumes, *s.new_volumes, s.old_esp, s.new_esp],
                           "new-root")
 
@@ -48,6 +48,42 @@ def reasons(s=None, snap=None, **kwargs):
 
 def test_guard_accepts_clean_new_boot():
     assert can_delete_old(state(), live()).ok
+
+
+def test_refuse_replaced_old_firmware_entry():
+    snap = live()
+    entries = dict(snap.boot_entries)
+    entries.pop("0001")
+    entries["0009"] = OLD_ENTRY.replace("Boot0001", "Boot0009").replace(
+        "shimx64.efi", "other.efi")
+    assert any("original old firmware entry" in reason for reason in
+               reasons(snap=replace(snap, boot_entries=entries)))
+
+
+def test_refuse_legacy_state_without_firmware_identity():
+    assert any("original old firmware entry" in reason for reason in
+               reasons(replace(state(), old_uefi_record=None), live()))
+
+
+def test_refuse_unencrypted_old_volume_mounted_through_mapper():
+    s = state()
+    old = replace(s.old_volumes[0], luks_uuid=None)
+    s = replace(s, old_volumes=[old])
+    snap = live(s)
+    snap = replace(snap, mappers=["oldlinear LINEAR-foo"],
+                   mounts=[*snap.mounts,
+                           MountInfo("/dev/mapper/oldlinear", "/mnt/old", "ext4", "rw")])
+    assert any("mapper oldlinear" in reason for reason in reasons(s, snap))
+
+
+def test_refuse_old_esp_mounted_by_device_path():
+    snap = live()
+    snap = replace(snap, mounts=[*snap.mounts,
+                                 MountInfo("/dev/vdb2", "/mnt/old-esp", "vfat", "rw")])
+    resolver = lambda path: {f"/dev/disk/by-partuuid/{OLD_ESP}": "/dev/vdb2"}.get(path, path)
+    decision = can_delete_old(state(), snap, delete_old_esp=True, resolve=resolver)
+    assert not decision.ok
+    assert any("mounted old volume" in reason for reason in decision.reasons)
 
 
 def test_refuse_running_from_old_system():

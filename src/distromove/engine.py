@@ -591,10 +591,17 @@ class SystemBackend:
         new_esp = (replace(find(self._created["esp"].partuuid), role="esp")
                    if self._plan.esp.mode == "new" else old_esp)
         root = next(v for v in new if v.role == "root")
+        old_entry = live.boot_entries.get(live.boot_current or "")
+        old_target = loader_of(old_entry)
+        if (not old_entry or old_target is None or
+                old_target[0].casefold() != old_esp.partuuid.casefold() or
+                old_target[1].replace("/", "\\").casefold() !=
+                self.context.loader.path.replace("/", "\\").casefold()):
+            raise ValueError("original UEFI entry changed before migration state was saved")
         return MigrationState(1, journal.migration_id, "PENDING_ACTIVATION",
                               root.fs_uuid or "", old, new, old_esp, new_esp,
                               self.context.bootloader_id, self.context.loader.bootloader_id,
-                              None, True, [])
+                              None, True, [], old_entry)
 
     def register(self, r, journal: Journal) -> str:
         disk, number, path, label = self.registration_details()

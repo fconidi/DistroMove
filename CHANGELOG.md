@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.25
+
+- Refuse old-system deletion when the original firmware entry has changed or its identity was not recorded.
+- Detect mounted old EFI partitions by their device path and check mapper references for unencrypted old volumes.
+
 ## 0.1.24
 
 - Add an icon for the SysLinuxOS Tools application menu on Debian systems.
