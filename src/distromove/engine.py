@@ -1091,8 +1091,11 @@ def rollback_destination(r, journal: Journal) -> None:
         if any(_live_partuuid(v) == str(identity["partuuid"]).casefold()
                for v in live.identities):
             raise RuntimeError("destination partition remained after rollback")
-    for item in [r_ for r_ in residues if r_.kind == "efi_dir"]:
+    efi_dirs = [item for item in residues if item.kind == "efi_dir"]
+    for item in efi_dirs:
         _remove_efi_dir(r, item.identity, journal)
+    if efi_dirs:
+        live = collect_snapshot(r)
     remaining = recover(journal.root, live, live.running_root_uuid)
     planned = {str(item["identity"]["partuuid"]).casefold() for item in entries
                if item["type"] == "intent" and item["op"] == "create_partition"}

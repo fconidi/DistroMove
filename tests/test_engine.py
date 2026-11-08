@@ -9,7 +9,7 @@ from distromove.engine import (MigrationContext, Secrets, SystemBackend,
 from distromove.esp import BootState
 from distromove.journal import Journal, Lock
 from distromove.layout import EspChoice, MigrationPlan
-from distromove.model import VolumeIdentity
+from distromove.model import SystemSnapshot, VolumeIdentity
 from distromove.model import SnapshotRef, Subvol
 from distromove.state import MigrationState, load_state
 from distromove.verify import Finding, VerifyReport
@@ -641,6 +641,32 @@ def test_rollback_removes_the_efi_directory_it_installed(tmp_path, monkeypatch):
     rollback_destination(SimpleNamespace(run=lambda argv, **kw: None), journal)
     assert not installed.exists()
     assert (esp / "EFI" / "SysLinuxOS").is_dir()
+    assert not journal.is_current()
+
+
+def test_rollback_rechecks_efi_contents_after_removal(tmp_path, monkeypatch):
+    import distromove.engine as engine
+    esp = tmp_path / "esp"
+    installed = esp / "EFI" / "distromove-290986ef"
+    installed.mkdir(parents=True)
+    (installed / "grubx64.efi").write_bytes(b"")
+    journal = Journal(tmp_path / "journal", "rollback-efi", host_root_uuid="old-root")
+    journal.intend("install_efi_dir", {"esp_partuuid": "esp-part",
+                                       "efi_dir": installed.name}, creates="efi_dir")
+
+    def snapshot(_runner):
+        names = [installed.name] if installed.exists() else []
+        return SystemSnapshot("", "", [], [], [], {"esp-part": names},
+                              None, {}, [], "old-root")
+
+    monkeypatch.setattr(engine, "collect_snapshot", snapshot)
+    monkeypatch.setattr(engine, "discover_source", lambda r: SimpleNamespace(
+        volumes=[], esp=SimpleNamespace(mountpoint=str(esp),
+                                        partition=SimpleNamespace(partuuid="esp-part"))))
+
+    rollback_destination(SimpleNamespace(run=lambda argv, **kw: None), journal)
+
+    assert not installed.exists()
     assert not journal.is_current()
 
 

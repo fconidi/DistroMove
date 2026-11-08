@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.27
+
+- Complete rollback after removing a new EFI loader directory by checking the updated system state.
+
 ## 0.1.26
 
 - Allow a new migration after the previous migration's old system has been deleted, while preserving its saved state.
