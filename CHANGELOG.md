@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.26
+
+- Allow a new migration after the previous migration's old system has been deleted, while preserving its saved state.
+
 ## 0.1.25
 
 - Refuse old-system deletion when the original firmware entry has changed or its identity was not recorded.

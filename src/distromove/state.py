@@ -97,7 +97,15 @@ def save_state(state: MigrationState, root: Path | str) -> Path:
         raise ValueError("state file is a symlink")
     current = directory / STATE_LINK
     if current.is_symlink() and current.readlink() != Path(path.name):
-        raise ValueError("another migration state is current")
+        target = current.readlink()
+        if target.name != str(target) or not target.name.startswith("state-"):
+            raise ValueError("unsafe current state link")
+        previous = _decode(directory / target)
+        old_roots = [item for item in state.old_volumes if item.role == "root"]
+        if (state.phase != "PENDING_ACTIVATION" or previous.phase != "DELETED"
+                or len(old_roots) != 1 or
+                (old_roots[0].fs_uuid or "").casefold() != previous.new_root_uuid.casefold()):
+            raise ValueError("another migration state is current")
     if current.exists() and not current.is_symlink():
         raise ValueError("current state link is occupied")
     data = json.dumps(asdict(state), sort_keys=True, separators=(",", ":")).encode() + b"\n"
