@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.28
+
+- Show the distribution name in the GRUB menu while retaining the distinct EFI loader identifier for package updates.
+
 ## 0.1.27
 
 - Complete rollback after removing a new EFI loader directory by checking the updated system state.

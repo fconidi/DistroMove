@@ -6,10 +6,12 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+import shlex
 
 from .esp import SecureBootUnsupported, secure_boot_enabled
 from .journal import fsync_dir, make_dirs, write_atomic
 from .model import LoaderInfo
+from .system_config import _os_release
 
 
 OLD_ENTRY = Path("etc/grub.d/40_distromove_old")
@@ -130,9 +132,27 @@ def persist_bootloader_id(chroot, bootloader_id: str) -> None:
     path = _file(chroot, ID_CONFIG)
     if path.exists() and not path.read_text().startswith("# DistroMove EFI identifier\n"):
         raise ValueError("EFI identifier config path is occupied")
+    name = "Linux"
+    for line in _os_release(chroot).splitlines():
+        key, separator, value = line.partition("=")
+        if key != "NAME" or not separator:
+            continue
+        try:
+            parsed = shlex.split(value)
+        except ValueError:
+            break
+        if (len(parsed) == 1 and 0 < len(parsed[0]) <= 80
+                and all(ord(char) >= 32 and ord(char) != 127 for char in parsed[0])):
+            name = parsed[0]
+        break
     op = chroot.journal.intend("persist_bootloader_id", {"bootloader_id": bootloader_id})
+    # Debian's GRUB package reads GRUB_DISTRIBUTOR to select the EFI directory,
+    # while grub-mkconfig uses it as the visible menu title. Preserve both.
     write_atomic(path, ("# DistroMove EFI identifier\n"
-                        f'GRUB_DISTRIBUTOR="{bootloader_id}"\n').encode(), 0o644)
+                        f'GRUB_DISTRIBUTOR="{bootloader_id}"\n'
+                        'case "${0##*/}" in\n'
+                        f'    grub-mkconfig) GRUB_DISTRIBUTOR={shlex.quote(name)} ;;\n'
+                        'esac\n').encode(), 0o644)
     chroot.journal.done(op, "installed")
 
 

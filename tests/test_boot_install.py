@@ -116,10 +116,36 @@ def test_no_nvram_and_distinct_id(tmp_path):
 
 def test_id_persisted_for_future_updates(tmp_path):
     copy = Copy(tmp_path / "root")
+    (copy.root / "etc").mkdir(exist_ok=True)
+    (copy.root / "etc/os-release").write_text('NAME="Debian GNU/Linux"\n')
     persist_bootloader_id(copy, "debian-moved")
     config = copy.root / ID_CONFIG
-    assert config.read_text().endswith('GRUB_DISTRIBUTOR="debian-moved"\n')
+    for caller, expected in (("grub-mkconfig", "Debian GNU/Linux"),
+                             ("grub-efi-amd64.postinst", "debian-moved")):
+        result = subprocess.run(
+            ["sh", "-c", '. "$1"; printf "%s" "$GRUB_DISTRIBUTOR"',
+             caller, str(config)], check=True, capture_output=True, text=True)
+        assert result.stdout == expected
     assert config.stat().st_mode & 0o777 == 0o644
+
+
+def test_menu_name_uses_copied_os_release_symlink(tmp_path):
+    copy = Copy(tmp_path / "root")
+    (copy.root / "etc").mkdir(exist_ok=True)
+    (copy.root / "usr/lib").mkdir(parents=True)
+    (copy.root / "usr/lib/os-release").write_text('NAME="Linux Mint"\n')
+    (copy.root / "etc/os-release").symlink_to("../usr/lib/os-release")
+    persist_bootloader_id(copy, "distromove-12345678")
+    config = copy.root / ID_CONFIG
+    menu = subprocess.run(
+        ["sh", "-c", '. "$1"; printf "%s" "$GRUB_DISTRIBUTOR"',
+         "grub-mkconfig", str(config)], check=True, capture_output=True, text=True)
+    package = subprocess.run(
+        ["sh", "-c", '. "$1"; printf "%s" "$GRUB_DISTRIBUTOR"',
+         "grub-efi-amd64.postinst", str(config)],
+        check=True, capture_output=True, text=True)
+    assert menu.stdout == "Linux Mint"
+    assert package.stdout == "distromove-12345678"
 
 
 def test_update_after_entry_removal(tmp_path):
